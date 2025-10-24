@@ -147,7 +147,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                             require_once '../helpers/BackupHooks.php';
                             $backupHooks = new BackupHooks();
                             $updatedData = [
-                                'plain_password' => $_POST['password'],
                                 'password_changed_at' => date('Y-m-d H:i:s'),
                                 'changed_by' => 'teacher'
                             ];

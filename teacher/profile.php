@@ -91,7 +91,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     try {
                         $backupHooks = new BackupHooks();
                         $updatedData = [
-                            'plain_password' => $_POST['new_password'],
                             'password_changed_at' => date('Y-m-d H:i:s')
                         ];
                         $backupHooks->backupTeacherPasswordChange($_SESSION['user_id'], $updatedData);

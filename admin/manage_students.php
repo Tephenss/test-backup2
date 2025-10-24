@@ -93,7 +93,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                                 require_once '../helpers/BackupHooks.php';
                                 $backupHooks = new BackupHooks();
                                 $updatedData = [
-                                    'plain_password' => $password,
                                     'password_reset_at' => date('Y-m-d H:i:s'),
                                     'reset_method' => 'admin_reset'
                                 ];

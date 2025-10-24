@@ -84,7 +84,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'approve' && isset($_POST['s
             try {
                 $backupHooks = new BackupHooks();
                 $updatedData = [
-                    'plain_password' => $password,
                     'status' => 'approved',
                     'section' => $assignedSection,
                     'approved_at' => date('Y-m-d H:i:s')

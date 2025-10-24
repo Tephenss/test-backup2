@@ -71,7 +71,6 @@ try {
         try {
             $backupHooks = new BackupHooks();
             $updatedData = [
-                'plain_password' => $password,
                 'password_reset_at' => date('Y-m-d H:i:s'),
                 'reset_method' => 'account_recovery'
             ];
