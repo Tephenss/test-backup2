@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Oct 06, 2025 at 07:22 AM
+-- Generation Time: Oct 24, 2025 at 03:16 PM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.0.30
 
@@ -45,7 +45,26 @@ CREATE TABLE `activity_logs` (
 INSERT INTO `activity_logs` (`id`, `user_id`, `user_type`, `action`, `details`, `ip_address`, `user_agent`, `created_at`) VALUES
 (3, 1, 'admin', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-09-30 01:57:57'),
 (4, 2025, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-09-30 02:05:51'),
-(5, 2025005, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-02 14:38:38');
+(5, 2025005, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-02 14:38:38'),
+(6, 2025005, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-09 13:34:45'),
+(7, 2025007, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-09 14:43:38'),
+(8, 2025, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 00:39:11'),
+(9, 2025, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 00:42:56'),
+(10, 0, 'teacher', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 00:46:17'),
+(11, 0, 'teacher', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 00:48:46'),
+(12, 2025, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 00:51:12'),
+(13, 0, 'teacher', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 00:55:16'),
+(14, 0, 'teacher', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 00:58:06'),
+(15, 0, 'teacher', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 01:08:27'),
+(16, 0, 'teacher', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 01:12:19'),
+(17, 2025, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 01:24:05'),
+(18, 0, 'teacher', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 01:26:05'),
+(19, 0, 'teacher', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 01:30:07'),
+(20, 2025005, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-10 02:08:18'),
+(21, 0, 'teacher', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-20 13:13:03'),
+(22, 2025, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-20 13:39:51'),
+(23, 0, 'teacher', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-20 14:36:53'),
+(24, 2025, 'student', 'Password Reset', 'Password was reset successfully', NULL, NULL, '2025-10-20 14:45:21');
 
 -- --------------------------------------------------------
 
@@ -176,7 +195,16 @@ INSERT INTO `class_students` (`id`, `class_id`, `student_id`, `status`, `enrolle
 (8, 12, 62, '', '2025-09-30 14:24:10'),
 (9, 1, 102, '', '2025-09-30 14:24:10'),
 (10, 11, 102, '', '2025-09-30 14:24:10'),
-(11, 12, 102, '', '2025-09-30 14:24:10');
+(11, 12, 102, '', '2025-09-30 14:24:10'),
+(12, 1, 105, 'active', '2025-10-09 04:21:32'),
+(13, 10, 105, 'active', '2025-10-09 04:21:32'),
+(14, 11, 105, 'active', '2025-10-09 04:21:32'),
+(15, 12, 105, 'active', '2025-10-09 04:21:32'),
+(16, 1, 106, 'active', '2025-10-20 13:26:58'),
+(17, 10, 106, 'active', '2025-10-20 13:26:58'),
+(18, 11, 106, 'active', '2025-10-20 13:26:58'),
+(19, 12, 106, 'active', '2025-10-20 13:26:58'),
+(20, 9, 108, 'active', '2025-10-20 13:30:02');
 
 -- --------------------------------------------------------
 
@@ -401,12 +429,14 @@ CREATE TABLE `students` (
 --
 
 INSERT INTO `students` (`id`, `student_id`, `password`, `first_name`, `middle_name`, `last_name`, `suffix_name`, `sex`, `civil_status`, `birthdate`, `place_of_birth`, `citizenship`, `address`, `phone_number`, `email`, `profile_picture`, `course`, `year_level`, `section`, `created_at`, `status`, `approved_at`, `form_138`, `good_moral`, `diploma`, `last_login`, `is_deleted`, `deleted_at`) VALUES
-(42, '2025005', '$2y$10$7LRFpr1bc1ymy6yWVp5E1.sYc.foLSEoRO7d/0Z616Gx0Z.QZ65pa', 'Mark Stephen', 'Co', 'Espinosa', '', 'Male', 'Single', '2004-09-13', 'Manila', 'Filipino', 'purok 5 chicko, Barangay Pangil, Majayjay, Laguna, CALABARZON', '09555294182', 'markstephenespinosa@gmail.com', NULL, 'BSIT', 1, 'A', '2025-04-27 10:20:53', 'deleted', NULL, NULL, NULL, NULL, NULL, 1, '2025-09-30 22:39:10'),
-(52, '2025007', '$2y$10$cOazvOcG15ShTl.XzG7meezeNrOejHcSiYYoNu7p8/Bsd66rVjB9C', 'Kark stephen', 'Co', 'Espinosa', '', 'Male', 'Single', '2004-02-20', 'Manila', 'Filipino', 'purok 5, Barangay Pangil, Majayjay, Laguna, CALABARZON', '09555294182', 'iattendancemanagement@gmail.com', NULL, 'BSIT', 1, NULL, '2025-04-27 12:35:33', NULL, NULL, 'uploads/requirements/form138_1745757333_680e2495d171f.jpg', 'uploads/requirements/goodmoral_1745757333_680e2495d1b21.jpg', 'uploads/requirements/diploma_1745757333_680e2495d1e44.jpg', NULL, 0, NULL),
-(62, '2025-008', '$2y$10$C2OObob1g/EyVvtTI9GM8OQtzJAE/of4nZHyaAAqBQO02rBlH6ZHC', 'Cian Clyde', 'Pasahol', 'Tandang', '', 'Male', 'Single', '2004-09-13', 'Manila', 'Filipino', 'purok 5 chicko, Barangay Pangil, Majayjay, Laguna, CALABARZON', '09555294182', 'cubejuliuscubejulius@gmail.com', NULL, 'BSIT', 4, 'A', '2025-04-29 06:55:13', 'approved', NULL, 'uploads/requirements/form138_1745909713_681077d1c8465.png', 'uploads/requirements/goodmoral_1745909713_681077d1c8f22.jpg', 'uploads/requirements/diploma_1745909713_681077d1c9810.jpg', NULL, 0, NULL),
-(102, '2025-001', '$2y$10$GKIS6cnBJVqyjvmSdB.lJ.eEfz6AVIM7X4G5EKxs3A9s7U/uzcXoq', 'Jolymar', 'Soroan', 'Opena', '', 'Male', 'Single', '2004-09-13', 'BAY LAGUNA', 'FILIPINO', 'dasdas, Barangay Pangil, Majayjay, Laguna, CALABARZON', '09554164329', 'accforsamsunh@gmail.com', NULL, 'BSIT', 4, 'A', '2025-09-30 01:25:31', 'approved', NULL, 'uploads/requirements/form138_1759195531_68db318b8d8e4.png', 'uploads/requirements/goodmoral_1759195531_68db318b8db71.png', 'uploads/requirements/diploma_1759195531_68db318b8ded4.png', NULL, 0, NULL),
-(103, '2025-002', '$2y$10$1eg8aY.GhORKH4y7Kp5XkuX9Sypahv9UPsCfsMDH6hZIGOrU7yVre', 'Erishs', 'Oca', 'Bautista', '', 'Male', 'Single', '2007-09-10', 'BAY LAGUNA', 'FILIPINO', 'asas, Barangay Select Barangay, Indang, Cavite, CALABARZON', '09555294182', 'tandangcianclyde134@gmail.com', NULL, 'BSIT', 1, NULL, '2025-09-30 14:42:45', 'declined', NULL, 'uploads/requirements/form138_1759243365_68dbec6578676.png', 'uploads/requirements/goodmoral_1759243365_68dbec657898a.png', 'uploads/requirements/diploma_1759243365_68dbec6578c11.png', NULL, 1, '2025-09-30 22:42:56'),
-(104, 'A0001', '\\.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'Test', NULL, 'Student', NULL, 'Male', 'Single', '2000-01-01', 'Test City', 'Filipino', 'Test Address', '09123456789', 'student1@example.com', NULL, 'BSIT', 1, 'A', '2025-10-02 14:07:41', 'approved', '2025-10-02 22:07:41', NULL, NULL, NULL, NULL, 0, NULL);
+(42, '2025005', '$2y$10$r/YYRG7b1L7ZzQmKTyrx7eeJryoLXTjIa33rVAGtORAC8dixwz19K', 'Mark Stephen', 'Co', 'Espinosa', '', 'Male', 'Single', '2004-09-13', 'Manila', 'Filipino', 'purok 5 chicko, Barangay Pangil, Majayjay, Laguna, CALABARZON', '09555294182', 'markstephenespinosa@gmail.com', NULL, 'BSIT', 1, 'A', '2025-04-27 10:20:53', 'approved', NULL, NULL, NULL, NULL, NULL, 0, NULL),
+(52, '2025007', '$2y$10$A/oGIqam8Z5kBnXe9Srnm.uDIAOXhKk7jyGHhhqe/RD98d1f2/58C', 'Kark stephen', 'Co', 'Espinosa', '', 'Male', 'Single', '2004-02-20', 'Manila', 'Filipino', 'purok 5, Barangay Pangil, Majayjay, Laguna, CALABARZON', '09555294182', 'iattendancemanagement@gmail.com', NULL, 'BSIT', 1, NULL, '2025-04-27 12:35:33', NULL, NULL, 'uploads/requirements/form138_1745757333_680e2495d171f.jpg', 'uploads/requirements/goodmoral_1745757333_680e2495d1b21.jpg', 'uploads/requirements/diploma_1745757333_680e2495d1e44.jpg', NULL, 0, NULL),
+(62, '2025-008', '$2y$10$RBdHkPOVdW9ujIqv118RVu5gAU0AGWaNThDewkZ7GB6TRGd0fBk.C', 'Cian Clyde', 'Pasahol', 'Tandang', '', 'Male', 'Single', '2004-09-13', 'Manila', 'Filipino', 'purok 5 chicko, Barangay Pangil, Majayjay, Laguna, CALABARZON', '09555294182', 'cubejuliuscubejulius@gmail.com', NULL, 'BSIT', 4, 'A', '2025-04-29 06:55:13', 'approved', NULL, 'uploads/requirements/form138_1745909713_681077d1c8465.png', 'uploads/requirements/goodmoral_1745909713_681077d1c8f22.jpg', 'uploads/requirements/diploma_1745909713_681077d1c9810.jpg', NULL, 0, NULL),
+(102, '2025-001', '$2y$10$JMIyrJ9K7FAXKwjjmodFS.fFVBh785ury7yW8MnHUEFbefMcYpcdW', 'Jolymar', 'Soroan', 'Opena', '', 'Male', 'Single', '2004-09-13', 'BAY LAGUNA', 'FILIPINO', 'dasdas, Barangay Pangil, Majayjay, Laguna, CALABARZON', '09554164329', 'accforsamsunh@gmail.com', NULL, 'BSIT', 4, 'A', '2025-09-30 01:25:31', 'approved', NULL, 'uploads/requirements/form138_1759195531_68db318b8d8e4.png', 'uploads/requirements/goodmoral_1759195531_68db318b8db71.png', 'uploads/requirements/diploma_1759195531_68db318b8ded4.png', NULL, 0, NULL),
+(103, '2025-002', '$2y$10$ubzXtzS6aezSTB2EvlnOOOVSh2/t4D/Lz3NZp.gGeK5DGat2Ay0GS', 'Erishs', 'Oca', 'Bautista', '', 'Male', 'Single', '2007-09-10', 'BAY LAGUNA', 'FILIPINO', 'asas, Barangay Select Barangay, Indang, Cavite, CALABARZON', '09555294182', 'tandangcianclyde134@gmail.com', NULL, 'BSIT', 1, NULL, '2025-09-30 14:42:45', 'approved', NULL, 'uploads/requirements/form138_1759243365_68dbec6578676.png', 'uploads/requirements/goodmoral_1759243365_68dbec657898a.png', 'uploads/requirements/diploma_1759243365_68dbec6578c11.png', NULL, 0, NULL),
+(105, '2025-003', '$2y$10$r1f3X9330vcBGKHXHVjmfu.tPE91Iu1MGb.oXGX4kgdgBOzIe9whG', 'Ayyash Jayo', 'Oca', 'Bautista', '', 'Female', 'Single', '2007-10-01', 'BAY LAGUNA', 'FILIPINO', 'dsdsd, Barangay Pansipit, Agoncillo, Batangas, CALABARZON', '09554164329', 'hiddencuisine1@gmail.com', NULL, 'BSIT', 1, 'A', '2025-10-09 04:13:11', 'approved', NULL, 'uploads/requirements/form138_1759983191_68e73657ba910.png', 'uploads/requirements/goodmoral_1759983191_68e73657bae86.png', 'uploads/requirements/diploma_1759983191_68e73657bb236.png', NULL, 0, NULL),
+(106, '2025-004', '$2y$10$KP5/RiMrDXv5.y92M.ILBeuQfU4RuDdMJkCGyfGxcmfGLSRj11qam', 'Kenjie', 'Co', 'Espinosa', '', 'Male', 'Single', '2007-10-01', 'BAY LAGUNA', 'FILIPINO', 'gfgf, Barangay Calumpang Lejos I, Indang, Cavite, CALABARZON', '09555294182', 'cubejuliuscqubejulius@gmail.com', NULL, 'BSIT', 1, 'A', '2025-10-09 04:50:26', 'approved', NULL, 'uploads/requirements/form138_1759985426_68e73f12da6f2.png', 'uploads/requirements/goodmoral_1759985426_68e73f12da9c5.png', 'uploads/requirements/diploma_1759985426_68e73f12dac81.png', NULL, 0, NULL),
+(108, '2025-005', '$2y$10$/KhVvIRTqs5HUknt0cEEVO.EP//9u7fa.DtkpP29v/ZJ5OkaFNh7O', 'Gars', 'Gars', 'Espino', '', 'Male', 'Single', '2007-10-03', 'BAY LAGUNA', 'FILIPINO', 'gdgd, Barangay Burgos, Majayjay, Laguna, CALABARZON', '09554164329', 'calmaerish26@gmail.com', NULL, 'BSIT', 1, 'B', '2025-10-20 13:18:19', 'approved', NULL, 'uploads/requirements/form138_1760966299_68f6369b79b2e.png', 'uploads/requirements/goodmoral_1760966299_68f6369b7a042.png', 'uploads/requirements/diploma_1760966299_68f6369b7a2df.png', NULL, 0, NULL);
 
 -- --------------------------------------------------------
 
@@ -521,8 +551,8 @@ CREATE TABLE `teachers` (
 --
 
 INSERT INTO `teachers` (`id`, `teacher_id`, `first_name`, `middle_name`, `last_name`, `suffix_name`, `sex`, `civil_status`, `birth_date`, `phone_number`, `username`, `password`, `full_name`, `email`, `phone`, `created_at`, `course`, `last_login`, `avatar`, `is_deleted`, `deleted_at`) VALUES
-(1, 'T0001', 'John', NULL, 'Doe', NULL, '', '', NULL, '', 'teacher1', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'John Doe', 'markstephenespinosa@gmail.com', NULL, '2025-04-15 07:53:22', 'BSIT', NULL, NULL, 0, NULL),
-(11, 'T0011', 'Erish', 'montemayor', 'Opena', '', 'Male', 'Single', '2000-09-19', '09554164329', 'eopena', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'Erish montemayor Opena', 'iattendancemanagement@gmail.com', NULL, '2025-04-26 18:36:30', 'BSIT', NULL, NULL, 0, NULL),
+(1, 'T0001', 'John', NULL, 'Doe', NULL, '', '', '2004-09-13', '', 'teacher1', '$2y$10$HAk1U2D7JLJfSrGaqeqD3uplVIn047vV/qIVrnUXEPHe8BdIJLpp.', 'John Doe', 'markstephenespinosa@gmail.com', NULL, '2025-04-15 07:53:22', 'BSIT', NULL, NULL, 0, NULL),
+(11, 'T0011', 'Erish', 'montemayor', 'Opena', '', 'Male', 'Single', '2000-09-19', '09554164329', 'eopena', '$2y$10$Rt8rVxUvFw91kO/ZkypFgOFnFMN/FlxdJE3GyTrfxNPc85JY8PX2G', 'Erish montemayor Opena', 'iattendancemanagement@gmail.com', NULL, '2025-04-26 18:36:30', 'BSIT', NULL, NULL, 0, NULL),
 (12, 'T0012', 'cian clyde', 'pasahol', 'tandang', '', 'Male', 'Single', '2002-02-19', '09090636354', 'ctandang', '$2y$10$WXJE3NGfdGJ8Zqto5t6dz.kIf90oo96OibE5cc5hs.z4Snpo0iVcm', 'cian clyde pasahol tandang', 'tandangc5@gmail.com', NULL, '2025-04-26 20:20:21', 'BSIT', NULL, NULL, 0, NULL),
 (15, 'T0015', 'Ayyash', 'Oca', 'Bautista', '', 'Female', 'Separated', '2005-12-02', '09090636354', '', '$2y$10$C6O/VQ/l93RygnOms7Z9zub8zQcIDhUOCtBqqJLJhj9K/OFpydSQi', 'Ayyash Oca Bautista', 'ayyashjb@gmail.com', NULL, '2025-04-29 07:34:13', 'BSIT', NULL, NULL, 0, NULL);
 
@@ -542,6 +572,13 @@ CREATE TABLE `timetable` (
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+--
+-- Dumping data for table `timetable`
+--
+
+INSERT INTO `timetable` (`id`, `class_id`, `day_of_week`, `start_time`, `end_time`, `room`, `created_at`) VALUES
+(0, 10, 'Monday', '08:00:00', '11:00:00', '303', '2025-10-21 03:52:01');
+
 -- --------------------------------------------------------
 
 --
@@ -550,7 +587,7 @@ CREATE TABLE `timetable` (
 
 CREATE TABLE `verification_codes` (
   `id` int(11) NOT NULL,
-  `user_id` int(11) NOT NULL,
+  `user_id` varchar(50) NOT NULL,
   `user_type` varchar(20) NOT NULL,
   `code` varchar(6) NOT NULL,
   `is_used` tinyint(1) DEFAULT 0,
@@ -563,19 +600,16 @@ CREATE TABLE `verification_codes` (
 --
 
 INSERT INTO `verification_codes` (`id`, `user_id`, `user_type`, `code`, `is_used`, `expires_at`, `created_at`) VALUES
-(11, 2025004, 'student', '555270', 0, '2025-04-22 13:11:14', '2025-04-22 12:41:14'),
-(25, 4, 'teacher', '408735', 1, '2025-04-26 09:59:35', '2025-04-26 09:58:08'),
-(29, 12, 'teacher', '726932', 1, '2025-04-26 20:21:48', '2025-04-26 20:21:26'),
-(41, 15, 'teacher', '452945', 1, '2025-04-30 03:15:04', '2025-04-30 03:13:49'),
-(0, 1, 'student', '278847', 1, '2025-09-28 14:42:40', '2025-09-28 14:09:17'),
-(0, 42, 'student', '474264', 1, '2025-10-02 14:50:37', '2025-10-02 14:38:47'),
-(0, 11, 'teacher', '116118', 1, '2025-10-03 12:23:51', '2025-10-02 15:52:27'),
-(0, 0, 'admin', '657046', 1, '2025-10-04 03:37:39', '2025-10-04 03:33:59'),
-(0, 0, 'teacher', '605492', 1, '2025-10-04 03:45:43', '2025-10-04 03:43:51'),
-(0, 2025, 'student', '012844', 1, '2025-10-04 03:45:43', '2025-10-04 03:44:02'),
-(0, 102, 'student', '562082', 1, '2025-10-04 04:05:30', '2025-10-04 04:01:30'),
-(0, 1, 'teacher', '787646', 1, '2025-10-04 04:14:22', '2025-10-04 04:07:21'),
-(0, 1, 'admin', '410170', 0, '2025-10-04 05:06:02', '2025-10-04 04:36:02');
+(0, 'T0001', 'teacher', '530553', 1, '2025-10-08 11:56:41', '2025-10-08 11:56:10'),
+(0, '42', 'student', '150025', 1, '2025-10-20 13:21:14', '2025-10-09 14:49:42'),
+(0, '15', 'teacher', '312226', 1, '2025-10-20 13:21:14', '2025-10-10 00:25:21'),
+(0, '62', 'student', '460410', 1, '2025-10-20 13:21:14', '2025-10-10 00:40:23'),
+(0, '11', 'teacher', '074810', 1, '2025-10-20 13:21:14', '2025-10-10 00:44:55'),
+(0, '106', 'student', '962753', 1, '2025-10-20 13:21:14', '2025-10-10 00:49:47'),
+(0, '1', 'student', '907887', 1, '2025-10-20 14:34:13', '2025-10-20 14:26:23'),
+(0, '108', 'student', '218844', 1, '2025-10-20 14:44:53', '2025-10-20 14:44:24'),
+(0, '1', 'admin', '992515', 1, '2025-10-21 03:51:28', '2025-10-21 03:50:45'),
+(0, '1', 'teacher', '471704', 1, '2025-10-21 04:19:38', '2025-10-21 04:18:55');
 
 --
 -- Indexes for dumped tables
@@ -687,7 +721,7 @@ ALTER TABLE `teachers`
 -- AUTO_INCREMENT for table `activity_logs`
 --
 ALTER TABLE `activity_logs`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=6;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=25;
 
 --
 -- AUTO_INCREMENT for table `attendance`
@@ -705,7 +739,7 @@ ALTER TABLE `classes`
 -- AUTO_INCREMENT for table `class_students`
 --
 ALTER TABLE `class_students`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=12;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=21;
 
 --
 -- AUTO_INCREMENT for table `semester_settings`
@@ -717,7 +751,7 @@ ALTER TABLE `semester_settings`
 -- AUTO_INCREMENT for table `students`
 --
 ALTER TABLE `students`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=105;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=109;
 COMMIT;
 
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
