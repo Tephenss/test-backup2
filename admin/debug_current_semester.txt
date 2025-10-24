@@ -1,0 +1,15 @@
+Array
+(
+    [id] => 1
+    [semester] => 1st Semester
+    [start_date] => 2025-08-01
+    [end_date] => 2025-12-20
+    [prelim_start] => 2025-08-01
+    [prelim_end] => 2025-09-15
+    [midterm_start] => 2025-09-16
+    [midterm_end] => 2025-10-30
+    [final_start] => 2025-11-01
+    [final_end] => 2025-12-20
+    [is_current] => 1
+    [created_at] => 2025-09-30 10:23:40
+)

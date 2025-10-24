@@ -1,0 +1,6 @@
+2025-05-13 04:58:51 - Error [2]: Constant SMTP_HOST already defined in C:\xampp\htdocs\test-backup2\config\email.php on line 3
+2025-05-13 04:58:51 - Error [2]: Constant SMTP_PORT already defined in C:\xampp\htdocs\test-backup2\config\email.php on line 4
+2025-05-13 04:58:51 - Error [2]: Constant SMTP_USERNAME already defined in C:\xampp\htdocs\test-backup2\config\email.php on line 5
+2025-05-13 04:58:51 - Error [2]: Constant SMTP_PASSWORD already defined in C:\xampp\htdocs\test-backup2\config\email.php on line 6
+2025-05-13 04:58:51 - Error [2]: Constant SMTP_FROM_EMAIL already defined in C:\xampp\htdocs\test-backup2\config\email.php on line 7
+2025-05-13 04:58:51 - Error [2]: Constant SMTP_FROM_NAME already defined in C:\xampp\htdocs\test-backup2\config\email.php on line 8

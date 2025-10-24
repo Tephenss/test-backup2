@@ -1,0 +1,215 @@
+/* Verification Page Styles */
+body {
+    background: url('https://ilearnu.lu.edu.ph/img/wallpaper_student.jpg') no-repeat center center fixed;
+    background-size: cover;
+    min-height: 100vh;
+    margin: 0;
+    padding: 0;
+    font-family: 'Nunito', sans-serif;
+}
+
+.container {
+    width: 100%;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+    position: relative;
+    animation: fadeIn 0.5s ease-out;
+}
+
+.card {
+    max-width: 500px;
+    width: 100%;
+    background: rgba(255, 255, 255, 0.98);
+    text-align: center;
+    padding: 40px;
+    border-radius: 15px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+    transform: scale(0.85);
+    transform-origin: center;
+    animation: scaleIn 0.5s ease-out;
+}
+
+.card-header {
+    background: transparent;
+    text-align: center;
+    padding: 0 0 2rem 0;
+    position: relative;
+    border-bottom: 2px solid rgba(0, 179, 65, 0.1);
+    margin-bottom: 2rem;
+}
+
+.card-header h4 {
+    margin: 0;
+    font-weight: 800;
+    color: #000;
+    font-size: 2rem;
+}
+
+.card-body {
+    padding: 0;
+}
+
+.verification-code {
+    letter-spacing: 0.5em;
+    text-align: center;
+    font-size: 1.5em;
+    padding: 1rem;
+    border: 2px solid #E0E6ED;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+    background-color: #fff;
+    width: 100%;
+}
+
+.verification-code:focus {
+    border-color: #00b341;
+    box-shadow: 0 0 0 0.2rem rgba(0, 179, 65, 0.25);
+}
+
+.btn-primary {
+    background: #00b341;
+    border: none;
+    padding: 0.75rem 2rem;
+    font-weight: 600;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #fff;
+    width: 100%;
+    font-size: 1rem;
+    position: relative;
+    overflow: hidden;
+}
+
+.btn-primary:after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 5px;
+    height: 5px;
+    background: rgba(255, 255, 255, 0.5);
+    opacity: 0;
+    border-radius: 100%;
+    transform: scale(1, 1) translate(-50%);
+    transform-origin: 50% 50%;
+}
+
+.btn-primary.success {
+    background: #00b341;
+    pointer-events: none;
+}
+
+.btn-primary.success:after {
+    animation: ripple 1s ease-out;
+}
+
+@keyframes ripple {
+    0% {
+        transform: scale(0, 0);
+        opacity: 0.5;
+    }
+    100% {
+        transform: scale(100, 100);
+        opacity: 0;
+    }
+}
+
+.resend-link {
+    color: #00b341;
+    text-decoration: none;
+    font-weight: 500;
+    transition: all 0.3s ease;
+}
+
+.resend-link:hover {
+    color: #009938;
+    text-decoration: none;
+}
+
+.alert {
+    border-radius: 8px;
+    font-weight: 500;
+    background-color: rgba(220, 53, 69, 0.1);
+    border: none;
+    color: #dc3545;
+    padding: 1rem;
+    margin-bottom: 2rem;
+    text-align: left;
+    animation: slideDown 0.3s ease-out;
+}
+
+.alert-danger {
+    background-color: rgba(220, 53, 69, 0.1);
+    color: #dc3545;
+}
+
+.text-muted {
+    color: #6c757d !important;
+    font-size: 0.875rem;
+}
+
+@keyframes slideDown {
+    from {
+        transform: translateY(-20px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+/* Page transition animations */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes scaleIn {
+    from {
+        transform: scale(0.7);
+        opacity: 0;
+    }
+    to {
+        transform: scale(0.85);
+        opacity: 1;
+    }
+}
+
+/* Success animation */
+.success-animation {
+    animation: successOut 0.5s ease-in forwards;
+}
+
+@keyframes successOut {
+    from {
+        transform: scale(0.85);
+        opacity: 1;
+    }
+    to {
+        transform: scale(1.1);
+        opacity: 0;
+    }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .container {
+        padding: 1rem;
+    }
+    
+    .card {
+        margin: 0;
+        padding: 1.5rem;
+        transform: scale(0.95);
+    }
+} 
