@@ -11,9 +11,37 @@ if (!isset($_SESSION['user_id']) || $_SESSION['user_type'] !== 'admin') {
 // Handle delete action
 if (isset($_GET['action']) && $_GET['action'] === 'delete' && isset($_GET['id'])) {
     try {
-        $stmt = $pdo->prepare("DELETE FROM timetable WHERE id = ?");
-        $stmt->execute([$_GET['id']]);
-        $_SESSION['success_message'] = "Schedule deleted successfully.";
+        // Get timetable data before deletion for Firebase backup
+        $getStmt = $pdo->prepare("SELECT * FROM timetable WHERE id = ?");
+        $getStmt->execute([$_GET['id']]);
+        $timetableData = $getStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($timetableData) {
+            // Delete only the specific timetable entry with LIMIT 1
+            $stmt = $pdo->prepare("DELETE FROM timetable WHERE id = ? LIMIT 1");
+            $stmt->execute([$_GET['id']]);
+            
+            if ($stmt->rowCount() > 0) {
+                // Backup timetable deletion to Firebase
+                try {
+                    require_once '../helpers/BackupHooks.php';
+                    $backupHooks = new BackupHooks();
+                    $backupData = array_merge($timetableData, [
+                        'deleted_at' => date('Y-m-d H:i:s'),
+                        'deleted_by' => 'admin'
+                    ]);
+                    $backupHooks->backupGenericRecord('timetable', $backupData, 'deletion');
+                } catch (Exception $e) {
+                    error_log("Firebase backup failed for timetable deletion: " . $e->getMessage());
+                }
+                
+                $_SESSION['success_message'] = "Schedule deleted successfully.";
+            } else {
+                $_SESSION['error_message'] = "Schedule not found or already deleted.";
+            }
+        } else {
+            $_SESSION['error_message'] = "Schedule not found.";
+        }
     } catch(PDOException $e) {
         $_SESSION['error_message'] = "Error deleting schedule: " . $e->getMessage();
     }

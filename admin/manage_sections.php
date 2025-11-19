@@ -38,6 +38,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     $stmt = $pdo->prepare("INSERT INTO sections (name, course_id, year_level) VALUES (?, ?, ?)");
                     $stmt->execute([$name, $course_id, $year_level]);
+                    
+                    // Backup section creation to Firebase
+                    try {
+                        require_once '../helpers/BackupHooks.php';
+                        $backupHooks = new BackupHooks();
+                        $sectionData = [
+                            'name' => $name,
+                            'course_id' => $course_id,
+                            'year_level' => $year_level,
+                            'created_at' => date('Y-m-d H:i:s')
+                        ];
+                        $backupHooks->backupSectionCreation($sectionData);
+                    } catch (Exception $e) {
+                        error_log("Firebase backup failed for section creation: " . $e->getMessage());
+                    }
+                    
                     $_SESSION['success'] = "Section added successfully!";
                 } catch (PDOException $e) {
                     $_SESSION['error'] = "Error adding section: " . $e->getMessage();
@@ -67,6 +83,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     $stmt = $pdo->prepare("UPDATE sections SET name = ?, course_id = ?, year_level = ? WHERE id = ?");
                     $stmt->execute([$name, $course_id, $year_level, $id]);
+                    
+                    // Backup section update to Firebase
+                    try {
+                        require_once '../helpers/BackupHooks.php';
+                        $backupHooks = new BackupHooks();
+                        $sectionData = [
+                            'id' => $id,
+                            'name' => $name,
+                            'course_id' => $course_id,
+                            'year_level' => $year_level,
+                            'updated_at' => date('Y-m-d H:i:s')
+                        ];
+                        $backupHooks->backupGenericRecord('sections', $sectionData, 'update');
+                    } catch (Exception $e) {
+                        error_log("Firebase backup failed for section update: " . $e->getMessage());
+                    }
+                    
                     $_SESSION['success'] = "Section updated successfully!";
                 } catch (PDOException $e) {
                     $_SESSION['error'] = "Error updating section: " . $e->getMessage();
@@ -99,8 +132,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         break;
                     }
                     
+                    // Get complete section data before deletion for Firebase backup
+                    $getSectionStmt = $pdo->prepare("SELECT * FROM sections WHERE id = ?");
+                    $getSectionStmt->execute([$id]);
+                    $completeSectionData = $getSectionStmt->fetch(PDO::FETCH_ASSOC);
+                    
                     $stmt = $pdo->prepare("DELETE FROM sections WHERE id = ?");
                     $stmt->execute([$id]);
+                    
+                    // Backup section deletion to Firebase
+                    if ($completeSectionData) {
+                        try {
+                            require_once '../helpers/BackupHooks.php';
+                            $backupHooks = new BackupHooks();
+                            $backupData = array_merge($completeSectionData, [
+                                'deleted_at' => date('Y-m-d H:i:s'),
+                                'deleted_by' => 'admin'
+                            ]);
+                            $backupHooks->backupGenericRecord('sections', $backupData, 'deletion');
+                        } catch (Exception $e) {
+                            error_log("Firebase backup failed for section deletion: " . $e->getMessage());
+                        }
+                    }
+                    
                     $_SESSION['success'] = "Section deleted successfully!";
                 } catch (PDOException $e) {
                     $_SESSION['error'] = "Error deleting section: " . $e->getMessage();

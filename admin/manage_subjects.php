@@ -73,16 +73,39 @@ try {
 
 // --- ONE-TIME SYNC: Ensure all subject_assignments have a matching class record ---
 try {
-    $stmt = $pdo->query("SELECT sa.teacher_id, sa.subject_id, sa.section_id, s.subject_code, sec.name as section_name, sec.year_level FROM subject_assignments sa JOIN subjects s ON sa.subject_id = s.id JOIN sections sec ON sa.section_id = sec.id");
+    $stmt = $pdo->query("SELECT sa.teacher_id, sa.subject_id, sa.section_id, sa.semester, s.subject_code, sec.name as section_name, sec.year_level FROM subject_assignments sa JOIN subjects s ON sa.subject_id = s.id JOIN sections sec ON sa.section_id = sec.id");
     $assignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
     foreach ($assignments as $a) {
         // Check if class already exists
         $stmtClass = $pdo->prepare("SELECT id FROM classes WHERE teacher_id = ? AND subject_id = ? AND section = ?");
         $stmtClass->execute([$a['teacher_id'], $a['subject_id'], $a['section_name']]);
         if (!$stmtClass->fetch()) {
-            // Insert new class record
-            $stmtInsert = $pdo->prepare("INSERT INTO classes (teacher_id, subject_id, section, status) VALUES (?, ?, ?, 'active')");
-            $stmtInsert->execute([$a['teacher_id'], $a['subject_id'], $a['section_name']]);
+            // Get academic year (default to current year)
+            $academic_year = date('Y') . '-' . (date('Y') + 1);
+            // Insert new class record with year_level
+            $stmtInsert = $pdo->prepare("INSERT INTO classes (teacher_id, subject_id, section, academic_year, semester, year_level, status) VALUES (?, ?, ?, ?, ?, ?, 'active')");
+            $stmtInsert->execute([$a['teacher_id'], $a['subject_id'], $a['section_name'], $academic_year, $a['semester'] ?? 1, $a['year_level']]);
+            
+            // Backup class creation to Firebase with correct year_level
+            try {
+                require_once '../helpers/BackupHooks.php';
+                $backupHooks = new BackupHooks();
+                $class_id = $pdo->lastInsertId();
+                $classData = [
+                    'id' => (string)$class_id,
+                    'teacher_id' => (string)$a['teacher_id'],
+                    'subject_id' => (string)$a['subject_id'],
+                    'section' => $a['section_name'],
+                    'academic_year' => $academic_year,
+                    'semester' => (string)($a['semester'] ?? 1),
+                    'year_level' => (string)(int)$a['year_level'], // Correct year_level as integer string (e.g., "1", "2", "3", "4")
+                    'status' => 'active',
+                    'created_at' => date('Y-m-d H:i:s')
+                ];
+                $backupHooks->backupClassCreation($classData);
+            } catch (Exception $e) {
+                error_log("Firebase backup failed for sync class creation: " . $e->getMessage());
+            }
         }
     }
 } catch (PDOException $e) {
@@ -155,6 +178,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             if (!$stmtClass->fetch()) {
                                 $stmtInsert = $pdo->prepare("INSERT INTO classes (teacher_id, section, subject_id, academic_year, semester, year_level, status) VALUES (?, ?, ?, ?, ?, ?, 'active')");
                                 $stmtInsert->execute([$teacher_id, $section_name, $subject_id, $academic_year, $semester, $year_level_val]);
+                                
+                                // Get the inserted class ID
+                                $class_id = $pdo->lastInsertId();
+                                
+                                // Backup class creation to Firebase with correct year_level
+                                try {
+                                    require_once '../helpers/BackupHooks.php';
+                                    $backupHooks = new BackupHooks();
+                                    $classData = [
+                                        'id' => (string)$class_id,
+                                        'teacher_id' => (string)$teacher_id,
+                                        'subject_id' => (string)$subject_id,
+                                        'section' => $section_name,
+                                        'academic_year' => $academic_year,
+                                        'semester' => (string)$semester,
+                                        'year_level' => (string)(int)$year_level_val, // Correct year_level as integer string (e.g., "1", "2", "3", "4")
+                                        'status' => 'active',
+                                        'created_at' => date('Y-m-d H:i:s')
+                                    ];
+                                    $backupHooks->backupClassCreation($classData);
+                                } catch (Exception $e) {
+                                    error_log("Firebase backup failed for class creation: " . $e->getMessage());
+                                }
                             }
                         } else {
                             $error_count++;
@@ -377,6 +423,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     if ($result) {
                     $_SESSION['success_message'] = "Semester settings updated successfully.";
+                    
+                    // Backup semester settings to Firebase
+                    try {
+                        require_once '../helpers/BackupHooks.php';
+                        $backupHooks = new BackupHooks();
+                        $semesterData = [
+                            'semester' => $semester,
+                            'start_date' => $start_date,
+                            'end_date' => $end_date,
+                            'prelim_start' => $prelim_start,
+                            'prelim_end' => $prelim_end,
+                            'midterm_start' => $midterm_start,
+                            'midterm_end' => $midterm_end,
+                            'final_start' => $final_start,
+                            'final_end' => $final_end,
+                            'is_current' => true,
+                            'created_at' => date('Y-m-d H:i:s')
+                        ];
+                        $backupHooks->backupGenericRecord('semester_settings', $semesterData, 'insert');
+                    } catch (Exception $e) {
+                        error_log("Firebase backup failed for semester settings: " . $e->getMessage());
+                    }
                     } else {
                         $_SESSION['error_message'] = "Failed to update semester settings.";
                     }
@@ -392,8 +460,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             case 'reset_assignments':
                 try {
+                    // Get all assignments before deletion for Firebase backup
+                    $getAssignmentsStmt = $pdo->query("SELECT * FROM subject_assignments");
+                    $assignments = $getAssignmentsStmt->fetchAll(PDO::FETCH_ASSOC);
+                    
                     $stmt = $pdo->prepare("DELETE FROM subject_assignments");
                     $stmt->execute();
+                    
+                    // Backup subject assignments reset to Firebase
+                    if (!empty($assignments)) {
+                        try {
+                            require_once '../helpers/BackupHooks.php';
+                            $backupHooks = new BackupHooks();
+                            foreach ($assignments as $assignment) {
+                                $backupData = array_merge($assignment, [
+                                    'deleted_at' => date('Y-m-d H:i:s'),
+                                    'deleted_by' => 'admin',
+                                    'operation' => 'reset_assignments'
+                                ]);
+                                $backupHooks->backupGenericRecord('subject_assignments', $backupData, 'deletion');
+                            }
+                        } catch (Exception $e) {
+                            error_log("Firebase backup failed for subject assignments reset: " . $e->getMessage());
+                        }
+                    }
+                    
                     $_SESSION['success_message'] = "All subject assignments have been reset.";
                 } catch(PDOException $e) {
                     $_SESSION['error_message'] = "Error resetting assignments: " . $e->getMessage();

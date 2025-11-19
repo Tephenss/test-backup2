@@ -372,31 +372,31 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
                 <div class="row g-3">
                 <div class="col-md-6">
                     <label class="form-label">Sex</label>
-                    <div class="form-control bg-light" readonly><?php echo htmlspecialchars($user['sex'] ?? ''); ?></div>
+                    <div class="form-control bg-light" readonly><?php echo !empty($user['sex']) ? htmlspecialchars($user['sex']) : 'N/A'; ?></div>
                         </div>
                 <div class="col-md-6">
                     <label class="form-label">Civil Status</label>
-                    <div class="form-control bg-light" readonly><?php echo htmlspecialchars($user['civil_status'] ?? ''); ?></div>
+                    <div class="form-control bg-light" readonly><?php echo !empty($user['civil_status']) ? htmlspecialchars($user['civil_status']) : 'N/A'; ?></div>
                     </div>
                 <div class="col-md-6">
                     <label class="form-label">Birthdate</label>
-                    <div class="form-control bg-light" readonly><?php echo !empty($user['birth_date']) ? date('F d, Y', strtotime($user['birth_date'])) : ''; ?></div>
+                    <div class="form-control bg-light" readonly><?php echo !empty($user['birthdate']) ? date('F d, Y', strtotime($user['birthdate'])) : 'N/A'; ?></div>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label">Phone Number</label>
-                    <div class="form-control bg-light" readonly><?php echo htmlspecialchars($user['phone_number'] ?? ''); ?></div>
+                    <div class="form-control bg-light" readonly><?php echo !empty($user['phone_number']) ? htmlspecialchars($user['phone_number']) : 'N/A'; ?></div>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label">Email</label>
-                    <div class="form-control bg-light" readonly><?php echo htmlspecialchars($user['email'] ?? ''); ?></div>
+                    <div class="form-control bg-light" readonly><?php echo !empty($user['email']) ? htmlspecialchars($user['email']) : 'N/A'; ?></div>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label">Course/Department</label>
-                    <div class="form-control bg-light" readonly><?php echo htmlspecialchars($user['course'] ?? $user['department'] ?? ''); ?></div>
+                    <div class="form-control bg-light" readonly><?php echo !empty($user['course']) ? htmlspecialchars($user['course']) : (!empty($user['department']) ? htmlspecialchars($user['department']) : 'N/A'); ?></div>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label">Created At</label>
-                    <div class="form-control bg-light" readonly><?php echo !empty($user['created_at']) ? date('F d, Y h:i A', strtotime($user['created_at'])) : ''; ?></div>
+                    <div class="form-control bg-light" readonly><?php echo !empty($user['created_at']) ? date('F d, Y h:i A', strtotime($user['created_at'])) : 'N/A'; ?></div>
                 </div>
             </div>
         </div>

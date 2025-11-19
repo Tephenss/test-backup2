@@ -7,52 +7,103 @@ if (!isset($_SESSION['user_id']) || $_SESSION['user_type'] !== 'student') {
     exit();
 }
 
-// Fetch student profile for avatar
-$stmt = $pdo->prepare("SELECT first_name, last_name, profile_picture FROM students WHERE id = ? LIMIT 1");
-$stmt->execute([$_SESSION['user_id']]);
-$student = $stmt->fetch(PDO::FETCH_ASSOC);
-$initials = strtoupper(substr($student['first_name'] ?? '', 0, 1) . substr($student['last_name'] ?? '', 0, 1));
-
-// Get timetable data for the student's enrolled classes
-$timetable = [];
-$stmt = $pdo->prepare("
-    SELECT t.*, 
-           CONCAT(s.subject_code, ' - ', c.section) as class_name,
-           s.subject_name,
-           c.section,
-           t.id as schedule_id,
-           teachers.full_name as teacher_name
-    FROM timetable t
-    JOIN classes c ON t.class_id = c.id
-    JOIN subjects s ON c.subject_id = s.id
-    JOIN teachers ON c.teacher_id = teachers.id
-    JOIN class_students cs ON c.id = cs.class_id
-    WHERE cs.student_id = ?
-    ORDER BY t.day_of_week, t.start_time
-");
-$stmt->execute([$_SESSION['user_id']]);
-$schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Initialize skipCells array for each day
-$skipCells = array_fill(0, 6, []); // 6 days (Monday to Saturday)
-
-// Initialize timetable array with numeric keys (1-6 for Monday-Saturday)
-foreach ($schedules as $schedule) {
-    // Convert day_of_week to numeric if it's a string
-    $dayNum = is_numeric($schedule['day_of_week']) ? (int)$schedule['day_of_week'] : array_search($schedule['day_of_week'], ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']) + 1;
-    
-    if ($dayNum >= 1 && $dayNum <= 6) { // Only process valid days (Monday-Saturday)
-        if (!isset($timetable[$dayNum])) {
-            $timetable[$dayNum] = [];
-        }
-        $timetable[$dayNum][] = $schedule;
-    }
+// Clear any previous error messages from other pages (like dashboard)
+$timetableError = null;
+if (isset($_SESSION['error'])) {
+    // Clear old errors from other pages
+    unset($_SESSION['error']);
 }
 
-// Debug information
-error_log("Student Schedules found: " . count($schedules));
-foreach ($timetable as $day => $daySchedules) {
-    error_log("Day $day has " . count($daySchedules) . " schedules");
+// Get student's data
+try {
+    $stmt = $pdo->prepare("SELECT * FROM students WHERE id = ?");
+    $stmt->execute([$_SESSION['user_id']]);
+    $student = $stmt->fetch();
+    
+    if (!$student) {
+        $_SESSION['error'] = "Student data not found.";
+        header("Location: dashboard.php");
+        exit();
+    }
+    
+    $studentCourse = $student['course'] ?? null;
+    $studentSection = $student['section'] ?? null;
+    $studentYearLevel = $student['year_level'] ?? null;
+    
+    // Get course_id from courses table
+    $courseId = null;
+    if ($studentCourse) {
+        $stmt = $pdo->prepare("SELECT id FROM courses WHERE code = ? LIMIT 1");
+        $stmt->execute([$studentCourse]);
+        $course = $stmt->fetch();
+        $courseId = $course['id'] ?? null;
+    }
+    
+    // Get timetable entries filtered by course_id, section, and year_level
+    $timetable = [];
+    $schedules = [];
+    
+    if ($courseId && $studentSection && $studentYearLevel) {
+        $stmt = $pdo->prepare("
+            SELECT t.*, 
+                   cl.teacher_id,
+                   cl.section,
+                   cl.year_level,
+                   te.full_name as teacher_name,
+                   sub.subject_code,
+                   sub.subject_name,
+                   t.id as schedule_id,
+                   t.room
+            FROM timetable t
+            JOIN classes cl ON t.class_id = cl.id
+            JOIN teachers te ON cl.teacher_id = te.id
+            JOIN subjects sub ON cl.subject_id = sub.id
+            WHERE t.course_id = ?
+              AND cl.section = ?
+              AND cl.year_level = ?
+              AND cl.status = 'active'
+            ORDER BY 
+              CASE t.day_of_week
+                WHEN 'Monday' THEN 1
+                WHEN 'Tuesday' THEN 2
+                WHEN 'Wednesday' THEN 3
+                WHEN 'Thursday' THEN 4
+                WHEN 'Friday' THEN 5
+                WHEN 'Saturday' THEN 6
+                ELSE 7
+              END,
+              t.start_time
+        ");
+        $stmt->execute([$courseId, $studentSection, $studentYearLevel]);
+        $schedules = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+    
+    // Build timetable array for grid rendering
+    foreach ($schedules as $schedule) {
+        $dayNum = is_numeric($schedule['day_of_week']) ? (int)$schedule['day_of_week'] : array_search($schedule['day_of_week'], ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']) + 1;
+        if ($dayNum >= 1 && $dayNum <= 6) {
+            if (!isset($timetable[$dayNum])) {
+                $timetable[$dayNum] = [];
+            }
+            $timetable[$dayNum][] = $schedule;
+        }
+    }
+    
+} catch (PDOException $e) {
+    error_log("Timetable Error: " . $e->getMessage());
+    $timetableError = "There was a problem loading your timetable. Please try again later.";
+    $timetable = [];
+    $schedules = [];
+}
+
+// Get first letter of first and last name for avatar
+$fullName = $_SESSION['full_name'] ?? $_SESSION['username'];
+$initials = '';
+$nameParts = explode(' ', $fullName);
+if (count($nameParts) >= 2) {
+    $initials = strtoupper(substr($nameParts[0], 0, 1) . substr($nameParts[count($nameParts) - 1], 0, 1));
+} else {
+    $initials = strtoupper(substr($fullName, 0, 2));
 }
 ?>
 <!DOCTYPE html>
@@ -68,66 +119,66 @@ foreach ($timetable as $day => $daySchedules) {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
     <link href="../assets/css/dashboard.css" rel="stylesheet">
     <style>
+        body.student-page {
+            background: #f7f9fb;
+        }
         .timetable-cell {
-            min-height: 50px;
+            min-height: 100px;
             height: 50px;
             vertical-align: top;
-            padding: 0 !important;
+            padding: 0.5rem !important;
             width: 14.28%;
             position: relative;
-            border: 5px solid #dee2e6;
+            border: 1px solid #e3e6f0;
+            background: var(--light-color);
         }
         .schedule-item {
             background-color: #e8f5e9;
             border-left: 4px solid #4caf50;
             border-radius: 4px;
-            padding: 8px;
+            padding: 8px 12px 8px 8px;
+            position: absolute;
+            left: 2px;
+            right: 2px;
+            top: 2px;
+            bottom: 2px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.12);
             transition: all 0.3s ease;
             z-index: 1;
-            font-size: 0.9rem;
+            font-size: 0.95rem;
             overflow: hidden;
+            height: 100%;
+            margin: 0;
             display: flex;
             flex-direction: column;
             justify-content: center;
-            align-items: flex-start;
-            text-align: left;
-            height: 100%;
         }
         .schedule-item:hover {
-            background-color: #c8e6c9;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            transform: scale(1.02);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
             z-index: 2;
         }
         .time-column {
-            width: 85px;
-            font-weight: normal !important;
-            background-color: #ffffff;
+            width: 100px;
+            font-weight: 600 !important;
+            background-color: #f5f5f5 !important;
             text-align: center !important;
-            padding: 15px 4px !important;
-            font-size: 0.9rem;
-            border: 5px solid #dee2e6;
-            white-space: nowrap;
-            overflow: hidden;
+            padding: 1rem 0.5rem !important;
+            font-size: 0.875rem !important;
+            border: 1px solid #e3e6f0;
         }
-        .sidebar-unread-badge {
-            background: #dc3545;
-            color: #fff;
-            border-radius: 50%;
-            font-size: 0.85em;
-            font-weight: bold;
-            padding: 2px 8px;
-            margin-left: 8px;
-            box-shadow: 0 2px 8px rgba(220,53,69,0.15);
-            display: inline-block;
-            vertical-align: middle;
-            animation: pulseUnread 1.2s infinite alternate;
-            position: relative;
-            top: -2px;
+        .timetable-wrapper {
+            overflow-x: auto;
         }
-        @keyframes pulseUnread {
-            0% { box-shadow: 0 0 0 0 rgba(220,53,69,0.4); }
-            100% { box-shadow: 0 0 0 8px rgba(220,53,69,0.0); }
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: #6c757d;
+        }
+        .empty-state i {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
         }
     </style>
 </head>
@@ -159,7 +210,7 @@ foreach ($timetable as $day => $daySchedules) {
                 </a>
             </li>
             <li class="nav-item">
-                <a class="nav-link" href="view_timetable.php">
+                <a class="nav-link active" href="view_timetable.php">
                     <i class="bi bi-clock"></i>
                     <span>Timetable</span>
                 </a>
@@ -213,14 +264,48 @@ foreach ($timetable as $day => $daySchedules) {
             </div>
         </div>
 
-        <div class="container-fluid">
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <h1 class="h3">My Timetable</h1>
+        <?php if ($timetableError): ?>
+            <div class="alert alert-danger fade show" role="alert">
+                <i class="bi bi-exclamation-circle-fill me-2"></i>
+                <?php echo htmlspecialchars($timetableError); ?>
             </div>
+        <?php endif; ?>
 
-            <div class="card animate-fadeIn delay-1">
-                <div class="card-body">
-                    <div class="table-responsive">
+        <?php if (isset($_SESSION['success_message'])): ?>
+            <div class="alert alert-success fade show" role="alert">
+                <i class="bi bi-check-circle-fill me-2"></i>
+                <?php 
+                echo $_SESSION['success_message'];
+                unset($_SESSION['success_message']);
+                ?>
+            </div>
+        <?php endif; ?>
+
+        <!-- Page Header -->
+        <div class="row animate-fadeIn">
+            <div class="col-12">
+                <h1 class="mb-4">My Timetable</h1>
+                <?php if ($studentCourse && $studentSection && $studentYearLevel): ?>
+                    <p class="text-muted mb-4">
+                        <strong>Course:</strong> <?php echo htmlspecialchars($studentCourse); ?> | 
+                        <strong>Section:</strong> <?php echo htmlspecialchars($studentSection); ?> | 
+                        <strong>Year Level:</strong> <?php echo htmlspecialchars($studentYearLevel); ?>
+                    </p>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <!-- Timetable -->
+        <div class="card animate-fadeIn delay-2">
+            <div class="card-body">
+                <?php if (empty($schedules)): ?>
+                    <div class="empty-state">
+                        <i class="bi bi-calendar-x"></i>
+                        <h4>No Schedule Found</h4>
+                        <p>No timetable entries found for your course, section, and year level.</p>
+                    </div>
+                <?php else: ?>
+                    <div class="timetable-wrapper">
                         <table class="table table-bordered">
                             <thead>
                                 <tr>
@@ -247,54 +332,48 @@ foreach ($timetable as $day => $daySchedules) {
                                     '11:00' => '11:30',
                                     '11:30' => '12:00',
                                     '12:00' => '12:30',
-                                    '12:30' => '1:00',
-                                    '1:00' => '1:30',
-                                    '1:30' => '2:00',
-                                    '2:00' => '2:30',
-                                    '2:30' => '3:00',
-                                    '3:00' => '3:30',
-                                    '3:30' => '4:00',
-                                    '4:00' => '4:30',
-                                    '4:30' => '5:00',
-                                    '5:00' => '5:30',
-                                    '5:30' => '6:00',
-                                    '6:00' => '6:30',
-                                    '6:30' => '7:00'
+                                    '12:30' => '13:00',
+                                    '13:00' => '13:30',
+                                    '13:30' => '14:00',
+                                    '14:00' => '14:30',
+                                    '14:30' => '15:00',
+                                    '15:00' => '15:30',
+                                    '15:30' => '16:00',
+                                    '16:00' => '16:30',
+                                    '16:30' => '17:00',
+                                    '17:00' => '17:30',
+                                    '17:30' => '18:00',
+                                    '18:00' => '18:30',
+                                    '18:30' => '19:00',
                                 ];
-                                $timeSlotKeys = array_keys($timeSlots);
-                                $slotCount = count($timeSlotKeys);
-
-                                // Prepare a map to track which cells to skip due to rowspan
+                                $timeKeys = array_keys($timeSlots);
                                 $skip = [];
-                                for ($day = 1; $day <= 6; $day++) {
-                                    $skip[$day] = array_fill(0, $slotCount, false);
-                                }
-
-                                for ($row = 0; $row < $slotCount; $row++) {
-                                    $startTime = $timeSlotKeys[$row];
+                                for ($row = 0; $row < count($timeSlots); $row++) {
+                                    $startTime = $timeKeys[$row];
                                     $endTime = $timeSlots[$startTime];
                                     $currentTime = strtotime(str_pad($startTime, 5, '0', STR_PAD_LEFT));
                                     echo '<tr>';
-                                    // Time column
-                                            $displayStart = str_replace(':30', '.30', $startTime);
-                                            $displayEnd = str_replace(':30', '.30', $endTime);
-                                    echo '<td class="time-column">' . $displayStart . '-' . $displayEnd . '</td>';
+                                    $start = date("g:i A", strtotime($startTime));
+                                    $end = date("g:i A", strtotime($endTime));
+                                    echo '<td class="time-column">' . $start . ' - ' . $end . '</td>';
                                     for ($day = 1; $day <= 6; $day++) {
-                                        if ($skip[$day][$row]) continue;
-                                        $cellRendered = false;
+                                        // Skip cell if covered by rowspan
+                                        if (isset($skip[$day][$row]) && $skip[$day][$row]) continue;
+                                        $cellPrinted = false;
                                         if (isset($timetable[$day])) {
                                             foreach ($timetable[$day] as $schedule) {
-                                                    $scheduleStart = strtotime($schedule['start_time']);
-                                                    $scheduleEnd = strtotime($schedule['end_time']);
+                                                $scheduleStart = strtotime($schedule['start_time']);
+                                                $scheduleEnd = strtotime($schedule['end_time']);
                                                 if ($currentTime == $scheduleStart) {
-                                                        $duration = ceil(($scheduleEnd - $scheduleStart) / (30 * 60));
-                                                    // Mark the next (duration-1) slots to be skipped
-                                                        for ($i = 1; $i < $duration; $i++) {
-                                                        if (isset($skip[$day][$row + $i])) {
-                                                            $skip[$day][$row + $i] = true;
-                                                        }
+                                                    $duration = ($scheduleEnd - $scheduleStart) / (30 * 60);
+                                                    for ($i = 1; $i < $duration; $i++) {
+                                                        $skip[$day][$row + $i] = true;
                                                     }
-                                                    // Format teacher name as A.Bautista
+                                                    echo '<td class="timetable-cell" rowspan="' . $duration . '">';
+                                                    echo '<div class="schedule-item">';
+                                                    // Subject code
+                                                    echo '<div style="font-weight:700;font-size:1.1em;margin-bottom:2px;">' . htmlspecialchars($schedule['subject_code']) . '</div>';
+                                                    // Teacher (initial + last name)
                                                     $teacherNameParts = explode(' ', trim($schedule['teacher_name']));
                                                     $teacherInitial = '';
                                                     $teacherLastName = '';
@@ -303,19 +382,16 @@ foreach ($timetable as $day => $daySchedules) {
                                                         $teacherLastName = ucfirst(strtolower(end($teacherNameParts)));
                                                     }
                                                     $shortTeacherName = $teacherInitial . '.' . $teacherLastName;
-                                                    echo '<td class="timetable-cell" rowspan="' . $duration . '">';
-                                                    echo '<div class="schedule-item">';
-                                                    echo '<div style="font-weight: bold; font-size: 1.1em; margin-bottom: 2px;">' . htmlspecialchars(explode(' ', $schedule['class_name'])[0]) . '</div>';
-                                                    echo '<div style="color: #4caf50; font-size: 1em; margin-bottom: 2px;">' . htmlspecialchars($shortTeacherName) . '</div>';
-                                                    echo '<div style="font-size: 0.95em; color: #333;">' . htmlspecialchars($schedule['room']) . '</div>';
+                                                    echo '<div style="color:#4caf50;font-size:1em;margin-bottom:2px;">' . htmlspecialchars($shortTeacherName) . '</div>';
+                                                    echo '<div style="font-size:0.95em;color:#333;">' . htmlspecialchars($schedule['room']) . '</div>';
                                                     echo '</div>';
                                                     echo '</td>';
-                                                    $cellRendered = true;
+                                                    $cellPrinted = true;
                                                     break;
                                                 }
                                             }
                                         }
-                                        if (!$cellRendered) {
+                                        if (!$cellPrinted) {
                                             echo '<td class="timetable-cell"></td>';
                                         }
                                     }
@@ -325,29 +401,13 @@ foreach ($timetable as $day => $daySchedules) {
                             </tbody>
                         </table>
                     </div>
-                </div>
+                <?php endif; ?>
             </div>
         </div>
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Toggle sidebar
-        document.querySelector('.toggle-sidebar').addEventListener('click', function() {
-            document.querySelector('.sidebar').classList.toggle('collapsed');
-            document.querySelector('.page-content').classList.toggle('expanded');
-        });
-
-        // Auto-hide success alerts
-        window.setTimeout(function() {
-            const alerts = document.getElementsByClassName('alert');
-            for(let alert of alerts) {
-                alert.classList.add('fade');
-                setTimeout(function() {
-                    alert.remove();
-                }, 150);
-            }
-        }, 3000);
-    </script>
+    <script src="../assets/js/dashboard.js"></script>
 </body>
 </html>
+

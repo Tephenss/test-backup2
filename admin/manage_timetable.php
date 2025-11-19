@@ -174,6 +174,29 @@ if (
     $startTime = $start_time;
     $endTime = $end_time;
     $room = $room;
+    
+    // 0. Check for exact duplicate schedule (same class, same day, same time)
+    $duplicateStmt = $pdo->prepare('
+        SELECT t.id FROM timetable t
+        WHERE t.class_id = ?
+          AND t.day_of_week = ?
+          AND t.start_time = ?
+          AND t.end_time = ?
+    ');
+    $duplicateStmt->execute([
+        $class_id,
+        $day_of_week,
+        $startTime,
+        $endTime
+    ]);
+    $duplicate = $duplicateStmt->fetch();
+    if ($duplicate) {
+        $_SESSION['error_message'] = 'This schedule already exists. The same class already has a schedule on ' . htmlspecialchars($day_of_week) . ' from ' . htmlspecialchars($startTime) . ' to ' . htmlspecialchars($endTime) . '.';
+        $_SESSION['form_data'] = $_POST;
+        header('Location: manage_timetable.php');
+        exit();
+    }
+    
     // 1. Check for overlap (corrected logic)
     $overlapStmt = $pdo->prepare('
         SELECT t.* FROM timetable t
@@ -200,39 +223,137 @@ if (
         header('Location: manage_timetable.php');
         exit();
     }
-    // 2. NEW: Enforce 4-hour per day limit for teacher/subject
-    $duration_new = (strtotime($endTime) - strtotime($startTime)) / 3600;
+    // 2. NEW: Enforce 4-hour per day limit per subject (regardless of teacher/section)
+    // Calculate duration in hours, ensuring valid times
+    $startTimestamp = strtotime($startTime);
+    $endTimestamp = strtotime($endTime);
+    
+    if ($startTimestamp === false || $endTimestamp === false || $endTimestamp <= $startTimestamp) {
+        $_SESSION['error_message'] = 'Error: Invalid time range. End time must be after start time.';
+        $_SESSION['form_data'] = $_POST;
+        header('Location: manage_timetable.php');
+        exit();
+    }
+    
+    $duration_new = ($endTimestamp - $startTimestamp) / 3600;
     // Get subject_id from the class
     $subjectStmt = $pdo->prepare('SELECT subject_id FROM classes WHERE id = ?');
     $subjectStmt->execute([$class_id]);
     $subject_id = $subjectStmt->fetchColumn();
     
+    if (!$subject_id) {
+        $_SESSION['error_message'] = 'Error: Could not find subject for the selected class.';
+        $_SESSION['form_data'] = $_POST;
+        header('Location: manage_timetable.php');
+        exit();
+    }
+    
+    // Get subject code/name for error message
+    $subjectInfoStmt = $pdo->prepare('SELECT subject_code, subject_name FROM subjects WHERE id = ?');
+    $subjectInfoStmt->execute([$subject_id]);
+    $subjectInfo = $subjectInfoStmt->fetch(PDO::FETCH_ASSOC);
+    $subjectDisplay = $subjectInfo ? ($subjectInfo['subject_code'] . ' - ' . $subjectInfo['subject_name']) : 'this subject';
+    
+    // Calculate total hours for this subject on this day (across all classes/teachers/sections)
     $hoursStmt = $pdo->prepare('
-        SELECT t.start_time, t.end_time FROM timetable t
+        SELECT t.start_time, t.end_time 
+        FROM timetable t
         JOIN classes cl ON t.class_id = cl.id
-        WHERE t.day_of_week = ? AND cl.teacher_id = ? AND cl.subject_id = ?
+        WHERE t.day_of_week = ? AND cl.subject_id = ?
     ');
-    $hoursStmt->execute([$day_of_week, $teacher_id, $subject_id]);
+    $hoursStmt->execute([$day_of_week, $subject_id]);
     $total_hours = 0;
     foreach ($hoursStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $total_hours += (strtotime($row['end_time']) - strtotime($row['start_time'])) / 3600;
+        // Calculate duration in hours, handling both 12-hour and 24-hour formats
+        $rowStart = strtotime($row['start_time']);
+        $rowEnd = strtotime($row['end_time']);
+        
+        if ($rowStart !== false && $rowEnd !== false && $rowEnd > $rowStart) {
+            $duration = ($rowEnd - $rowStart) / 3600;
+            $total_hours += $duration;
+        }
     }
-    if (($total_hours + $duration_new) > 4) {
-        $_SESSION['error_message'] = 'Limit reached: A teacher can only have up to 4 hours per day for the same subject.';
+    
+    // Round to 2 decimal places to avoid floating point precision issues
+    $total_hours = round($total_hours, 2);
+    $duration_new = round($duration_new, 2);
+    
+    // Debug logging
+    error_log("Subject hour validation - Subject ID: {$subject_id}, Day: {$day_of_week}, Existing hours: {$total_hours}, New duration: {$duration_new}, Total after add: " . ($total_hours + $duration_new));
+    
+    // Check if adding new duration would exceed 4 hours (use > 4.01 to account for rounding and allow exactly 4 hours)
+    if (($total_hours + $duration_new) > 4.01) {
+        $remaining_hours = 4 - $total_hours;
+        $remaining_hours_formatted = $remaining_hours > 0 ? number_format($remaining_hours, 2) : '0';
+        $_SESSION['error_message'] = 'Limit reached: ' . htmlspecialchars($subjectDisplay) . ' has already reached the maximum of 4 hours per day on ' . htmlspecialchars($day_of_week) . '. ' . 
+                                     'Current total: ' . number_format($total_hours, 2) . ' hour(s). ' .
+                                     ($remaining_hours > 0 ? 'Only ' . $remaining_hours_formatted . ' hour(s) remaining.' : 'No time remaining.');
         $_SESSION['form_data'] = $_POST;
         header('Location: manage_timetable.php');
         exit();
     }
     // --- END NEW ---
     try {
-            $stmt = $pdo->prepare("INSERT INTO timetable (class_id, day_of_week, start_time, end_time, room) VALUES (?, ?, ?, ?, ?)");
+            // Get course_id from the class matching both section name AND year_level
+            $stmtSection = $pdo->prepare("
+                SELECT s.course_id 
+                FROM classes c 
+                JOIN sections s ON c.section = s.name AND c.year_level = s.year_level
+                WHERE c.id = ? 
+                LIMIT 1
+            ");
+            $stmtSection->execute([$class_id]);
+            $sectionData = $stmtSection->fetch(PDO::FETCH_ASSOC);
+            $course_id = $sectionData['course_id'] ?? null;
+            
+            $stmt = $pdo->prepare("INSERT INTO timetable (class_id, course_id, day_of_week, start_time, end_time, room) VALUES (?, ?, ?, ?, ?, ?)");
             $stmt->execute([
                 $class_id,
-            $day_of_week,
-            $start_time,
-            $end_time,
-            $room
+                $course_id,
+                $day_of_week,
+                $start_time,
+                $end_time,
+                $room
             ]);
+            
+            // Get the inserted timetable ID
+            $timetable_id = $pdo->lastInsertId();
+            
+            // Backup timetable entry to Firebase
+            try {
+                require_once '../helpers/BackupHooks.php';
+                $backupHooks = new BackupHooks();
+                
+                // Convert 24-hour to 12-hour format for Firebase
+                function convertTo12Hour($time24) {
+                    if (empty($time24)) return $time24;
+                    try {
+                        $timeWithoutSeconds = substr($time24, 0, 5); // Get HH:mm
+                        $date = DateTime::createFromFormat('H:i', $timeWithoutSeconds);
+                        if ($date) {
+                            return $date->format('g:i A'); // Format: 1:30 PM
+                        }
+                    } catch (Exception $e) {
+                        return $time24;
+                    }
+                    return $time24;
+                }
+                
+                $timetableData = [
+                    'id' => (string)$timetable_id, // Include timetable ID for proper matching
+                    'class_id' => (string)$class_id, // Ensure it's a string to match classes.id format in Firebase
+                    'course_id' => $course_id ? (string)$course_id : null, // Include course_id from section
+                    'day_of_week' => $day_of_week,
+                    'start_time' => convertTo12Hour($start_time),
+                    'end_time' => convertTo12Hour($end_time),
+                    'room' => $room,
+                    'created_at' => date('Y-m-d H:i:s')
+                ];
+                $backupHooks->backupTimetableEntry($timetableData);
+            } catch (Exception $e) {
+                error_log("Firebase backup failed for timetable entry: " . $e->getMessage());
+            }
+            
             $_SESSION['success_message'] = 'Schedule added successfully!';
         unset($_SESSION['form_data']);
         header('Location: manage_timetable.php');
@@ -251,9 +372,156 @@ if (
     isset($_POST['id'])
 ) {
     try {
-        $stmt = $pdo->prepare("DELETE FROM timetable WHERE id = ?");
-        $stmt->execute([$_POST['id']]);
-        $_SESSION['success_message'] = 'Schedule deleted successfully!';
+        // Get timetable data before deletion for Firebase backup
+        $getStmt = $pdo->prepare("SELECT * FROM timetable WHERE id = ?");
+        $getStmt->execute([$_POST['id']]);
+        $timetableData = $getStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$timetableData) {
+            $_SESSION['error_message'] = 'Schedule not found!';
+            header('Location: manage_timetable.php');
+            exit();
+        }
+
+        // Add ID to data for Firebase deletion
+        $timetableData['id'] = $_POST['id'];
+        $timetableIdToDelete = $_POST['id'];
+        
+        error_log("=== Starting deletion for timetable ID: " . $timetableIdToDelete . " ===");
+
+        // First, delete from Firebase BEFORE deleting from MySQL
+        $firebaseDeleted = false;
+        try {
+            require_once '../helpers/BackupHooks.php';
+            $backupHooks = new BackupHooks();
+            $backupData = array_merge($timetableData, [
+                'deleted_at' => date('Y-m-d H:i:s'),
+                'deleted_by' => 'admin'
+            ]);
+            $firebaseDeleted = $backupHooks->backupGenericRecord('timetable', $backupData, 'deletion');
+            if (!$firebaseDeleted) {
+                error_log("Firebase deletion via BackupHooks failed for timetable ID: " . $timetableIdToDelete);
+            } else {
+                error_log("Firebase deletion via BackupHooks successful for timetable ID: " . $timetableIdToDelete);
+            }
+        } catch (Exception $e) {
+            error_log("Firebase backup failed for timetable deletion: " . $e->getMessage());
+            // Continue with MySQL deletion even if Firebase fails
+        }
+        
+        // Additional direct Firebase deletion as backup
+        try {
+            $firebaseConfig = require '../config/firebase.php';
+            $firebaseUrl = $firebaseConfig['database_url'] . 'attendance_system/timetable.json';
+            
+            // Get all Firebase records
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $firebaseUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+            
+            $response = curl_exec($ch);
+            curl_close($ch);
+            
+            if ($response !== false) {
+                $firebaseData = json_decode($response, true);
+                    if ($firebaseData && is_array($firebaseData)) {
+                    $deletedCount = 0;
+                    $foundMatch = false;
+                    error_log("Checking " . count($firebaseData) . " Firebase records for deletion (target ID: " . $timetableIdToDelete . ")");
+                    
+                    foreach ($firebaseData as $key => $record) {
+                        // Skip if we already found and deleted a match
+                        if ($foundMatch) {
+                            break;
+                        }
+                        
+                        $shouldDelete = false;
+                        $matchReason = '';
+                        
+                        // STRICT MATCHING: Only delete if ID matches exactly
+                        // Priority 1: Check data.id (most reliable)
+                        if (isset($record['data']['id']) && $record['data']['id'] == $timetableIdToDelete) {
+                            $shouldDelete = true;
+                            $matchReason = 'data.id';
+                            error_log("Firebase deletion match found (data.id): key=" . $key . ", id=" . $record['data']['id']);
+                        }
+                        // Priority 2: Check root id (fallback)
+                        elseif (isset($record['id']) && $record['id'] == $timetableIdToDelete) {
+                            $shouldDelete = true;
+                            $matchReason = 'root.id';
+                            error_log("Firebase deletion match found (root.id): key=" . $key . ", id=" . $record['id']);
+                        }
+                        // Priority 3: Check key pattern (last resort, but still strict)
+                        // Only match if key ends with the ID or contains it with underscores
+                        elseif (preg_match('/_' . preg_quote($timetableIdToDelete, '/') . '(_|$)/', $key)) {
+                            // Only match if key contains the ID with underscore before it and underscore or end after it
+                            $shouldDelete = true;
+                            $matchReason = 'key.pattern';
+                            error_log("Firebase deletion match found (key pattern): key=" . $key);
+                        }
+                        
+                        // DO NOT use field matching (class_id, day_of_week, etc.) as it's too broad
+                        // This was causing multiple records to be deleted
+                        
+                        if ($shouldDelete && !$foundMatch) {
+                            $deleteUrl = $firebaseConfig['database_url'] . 'attendance_system/timetable/' . urlencode($key) . '.json';
+                            
+                            error_log("Attempting to delete Firebase record: key=" . $key . ", reason=" . $matchReason . ", ID=" . $timetableIdToDelete);
+                            
+                            $ch = curl_init();
+                            curl_setopt($ch, CURLOPT_URL, $deleteUrl);
+                            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+                            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+                            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+                            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+                            
+                            $deleteResponse = curl_exec($ch);
+                            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                            curl_close($ch);
+                            
+                            if ($httpCode >= 200 && $httpCode < 300) {
+                                error_log("✓ Direct Firebase deletion successful for key: " . $key . " (ID: " . $timetableIdToDelete . ", reason: " . $matchReason . ")");
+                                $firebaseDeleted = true;
+                                $deletedCount++;
+                                $foundMatch = true; // Mark that we found and deleted a match
+                                
+                                // Only delete ONE record - break after first successful deletion
+                                // This prevents multiple records from being deleted
+                                break;
+                            } else {
+                                error_log("✗ Direct Firebase deletion failed for key: " . $key . " HTTP: " . $httpCode);
+                            }
+                        }
+                    }
+                    
+                    if ($deletedCount > 1) {
+                        error_log("WARNING: Multiple Firebase records deleted for timetable ID: " . $_POST['id'] . " (count: " . $deletedCount . ")");
+                    } elseif ($deletedCount == 0) {
+                        error_log("WARNING: No Firebase record found to delete for timetable ID: " . $_POST['id']);
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            error_log("Direct Firebase deletion error: " . $e->getMessage());
+        }
+
+        // Now delete from MySQL
+        $stmt = $pdo->prepare("DELETE FROM timetable WHERE id = ? LIMIT 1");
+        $result = $stmt->execute([$_POST['id']]);
+
+        if ($stmt->rowCount() === 0) {
+            $_SESSION['error_message'] = 'Schedule not found or already deleted!';
+        } else {
+            $message = 'Schedule deleted successfully!';
+            if (!$firebaseDeleted) {
+                $message .= ' (Note: Firebase sync may have failed)';
+            }
+            $_SESSION['success_message'] = $message;
+        }
     } catch (PDOException $e) {
         $_SESSION['error_message'] = 'Error deleting schedule: ' . $e->getMessage();
     }
@@ -644,7 +912,7 @@ if (
                                                     echo '<td class="timetable-cell" rowspan="' . $duration . '">';
                                                     echo '<div class="schedule-item" style="background-color:#e3f2fd;border-left:4px solid #1976d2;box-shadow:0 1px 3px rgba(0,0,0,0.12);font-size:0.95rem;overflow:hidden;height:100%;margin:0;padding:8px 12px 8px 8px;display:flex;flex-direction:column;justify-content:center;position:relative;">';
                                                     // Small X button
-                                                    echo '<button type="button" class="btn-close btn-close-sm position-absolute top-0 end-0 m-1 delete-timetable" aria-label="Delete" data-id="' . $schedule['id'] . '" data-bs-toggle="modal" data-bs-target="#deleteTimetableModal" style="z-index:2;"></button>';
+                                                    echo '<button type="button" class="btn-close btn-close-sm position-absolute top-0 end-0 m-1 delete-timetable" aria-label="Delete" data-id="' . htmlspecialchars($schedule['id']) . '" data-bs-toggle="modal" data-bs-target="#deleteTimetableModal" style="z-index:2;"></button>';
                                                     // Subject code
                                                     echo '<div style="font-weight:700;font-size:1.1em;">' . htmlspecialchars($schedule['subject_code']) . '</div>';
                                                     // Teacher (initial + last name)
@@ -839,7 +1107,7 @@ if (
                     <h5 class="modal-title delete-modal-title">Delete Schedule</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
-                <form method="POST">
+                <form method="POST" id="deleteTimetableForm">
                     <input type="hidden" name="action" value="delete">
                     <input type="hidden" name="id" id="delete_timetable_id">
                     <div class="modal-body">
@@ -851,7 +1119,7 @@ if (
                     </div>
                     <div class="modal-footer delete-modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                        <button type="submit" class="btn btn-danger">
+                        <button type="submit" class="btn btn-danger" id="confirmDeleteBtn">
                             <i class="bi bi-trash me-2"></i>
                             Delete Schedule
                         </button>
@@ -892,11 +1160,117 @@ if (
 
             // Handle delete modal data
             document.querySelectorAll('.delete-timetable').forEach(button => {
-                button.addEventListener('click', function() {
+                button.addEventListener('click', function(e) {
+                    e.preventDefault(); // Prevent any default behavior
+                    e.stopPropagation(); // Stop event propagation
+                    
                     const id = this.dataset.id;
                     document.getElementById('delete_timetable_id').value = id;
+                    
+                    // DO NOT delete from Firebase here - only open the modal
+                    // Deletion should only happen when user confirms in the modal
                 });
             });
+            
+            // Handle delete form submission - delete from Firebase ONLY when user confirms
+            const deleteForm = document.getElementById('deleteTimetableForm');
+            if (deleteForm) {
+                deleteForm.addEventListener('submit', function(e) {
+                    const timetableId = document.getElementById('delete_timetable_id').value;
+                    if (timetableId) {
+                        console.log('Delete form submitted for ID:', timetableId);
+                        // Delete from Firebase ONLY when form is submitted (user confirmed)
+                        // Note: The PHP backend will also handle Firebase deletion, but we do it here too for immediate update
+                        deleteFromFirebaseDirect(timetableId);
+                    }
+                });
+            }
+            
+            // Direct Firebase deletion function
+            function deleteFromFirebaseDirect(timetableId) {
+                console.log('Attempting direct Firebase deletion for ID:', timetableId);
+                
+                // Get Firebase config from PHP
+                const firebaseConfig = {
+                    databaseUrl: 'https://iattendance-backup-115dc-default-rtdb.asia-southeast1.firebasedatabase.app'
+                };
+                
+                // First, get all timetable records from Firebase
+                fetch(`${firebaseConfig.databaseUrl}/attendance_system/timetable.json`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (!data) {
+                            console.log('No timetable records found in Firebase');
+                            return;
+                        }
+                        
+                        console.log('Found', Object.keys(data).length, 'timetable records in Firebase');
+                        
+                        // Find matching record to delete - STRICT MATCHING (only ONE record)
+                        let deletedCount = 0;
+                        let foundMatch = false;
+                        
+                        // STRICT MATCHING: Only delete if ID matches exactly
+                        // Priority 1: Check data.id (most reliable)
+                        for (const key of Object.keys(data)) {
+                            const record = data[key];
+                            let shouldDelete = false;
+                            
+                            if (record.data && record.data.id == timetableId) {
+                                shouldDelete = true;
+                                console.log('Firebase deletion match found (data.id): key=' + key + ', id=' + record.data.id);
+                            }
+                            // Priority 2: Check root id (fallback)
+                            else if (record.id == timetableId) {
+                                shouldDelete = true;
+                                console.log('Firebase deletion match found (root.id): key=' + key + ', id=' + record.id);
+                            }
+                            // Priority 3: Check key pattern (last resort, but still strict)
+                            // Only match if key ends with the ID or contains it with underscores
+                            else {
+                                // Use regex to match: _ID_ or _ID at end
+                                const pattern = new RegExp('_' + timetableId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(_|$)');
+                                if (pattern.test(key)) {
+                                    shouldDelete = true;
+                                    console.log('Firebase deletion match found (key pattern): key=' + key);
+                                }
+                            }
+                            
+                            // DO NOT use field matching (class_id, day_of_week, etc.) as it's too broad
+                            
+                            if (shouldDelete && !foundMatch) {
+                                foundMatch = true;
+                                console.log('Deleting Firebase record:', key);
+                                const deleteUrl = `${firebaseConfig.databaseUrl}/attendance_system/timetable/${key}.json`;
+                                
+                                fetch(deleteUrl, { method: 'DELETE' })
+                                    .then(response => {
+                                        if (response.ok) {
+                                            deletedCount++;
+                                            console.log('Successfully deleted:', key, '(ID: ' + timetableId + ')');
+                                        } else {
+                                            console.error('Failed to delete:', key, response.status);
+                                        }
+                                    })
+                                    .catch(error => {
+                                        console.error('Error deleting:', key, error);
+                                    });
+                                
+                                // Only delete ONE record - break after first match
+                                break;
+                            }
+                        }
+                        
+                        if (deletedCount === 0 && !foundMatch) {
+                            console.warn('No Firebase record found to delete for timetable ID: ' + timetableId);
+                        } else if (deletedCount > 1) {
+                            console.error('WARNING: Multiple Firebase records deleted for timetable ID: ' + timetableId + ' (count: ' + deletedCount + ')');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error fetching Firebase data:', error);
+                    });
+            }
 
         // Add Timetable Form validation
         const addForm = document.getElementById('addTimetableForm');
@@ -1159,4 +1533,5 @@ if (
     restrictTimePickerMinutes('edit_end_time');
     </script>
 </body>
+</html> 
 </html> 

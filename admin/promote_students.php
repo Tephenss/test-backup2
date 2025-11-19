@@ -1,6 +1,7 @@
 <?php
 require_once '../config/database.php';
 require_once '../helpers/functions.php';
+require_once '../helpers/BackupHooks.php';
 
 // Check if user is logged in and is admin
 session_start();
@@ -100,6 +101,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 VALUES (?, ?, ?)
                             ");
                             $stmt->execute([$letter, $course_id, $new_year_level]);
+                            
+                            // Backup section creation to Firebase
+                            try {
+                                $backupHooks = new BackupHooks();
+                                $sectionData = [
+                                    'name' => $letter,
+                                    'course_id' => $course_id,
+                                    'year_level' => $new_year_level,
+                                    'created_at' => date('Y-m-d H:i:s'),
+                                    'created_by' => 'promote_students'
+                                ];
+                                $backupHooks->backupSectionCreation($sectionData);
+                            } catch (Exception $e) {
+                                error_log("Firebase backup failed for section creation: " . $e->getMessage());
+                            }
+                            
                             $assigned_section = $letter;
                             break;
                         }

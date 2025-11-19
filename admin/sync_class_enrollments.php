@@ -1,5 +1,6 @@
 <?php
 require_once '../config/database.php';
+require_once '../helpers/BackupHooks.php';
 
 echo "<h2>Syncing Class Enrollments</h2>";
 
@@ -22,6 +23,22 @@ foreach ($classes as $class) {
             // Enroll student
             $insert = $pdo->prepare("INSERT INTO class_students (class_id, student_id, status) VALUES (?, ?, 'active')");
             $insert->execute([$class_id, $student_id]);
+            
+            // Backup class enrollment to Firebase
+            try {
+                $backupHooks = new BackupHooks();
+                $enrollmentData = [
+                    'class_id' => $class_id,
+                    'student_id' => $student_id,
+                    'status' => 'active',
+                    'enrolled_at' => date('Y-m-d H:i:s'),
+                    'enrolled_by' => 'sync_class_enrollments'
+                ];
+                $backupHooks->backupClassEnrollment($enrollmentData);
+            } catch (Exception $e) {
+                error_log("Firebase backup failed for class enrollment: " . $e->getMessage());
+            }
+            
             echo "Enrolled student $student_id in class $class_id<br>";
             $total_synced++;
         }

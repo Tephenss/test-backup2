@@ -244,6 +244,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 }
                 break;
 
+            case 'capture_id':
+                $teacher_id = intval($_POST['teacher_id']);
+                $image_data = $_POST['image_data'] ?? '';
+                
+                if (empty($image_data) || empty($teacher_id)) {
+                    $_SESSION['error_message'] = "Invalid image data or teacher ID.";
+                    break;
+                }
+                
+                try {
+                    // Store original base64 string for Firebase (before decoding)
+                    $base64_string = $image_data;
+                    
+                    // Decode base64 image for file storage
+                    $image_data = str_replace('data:image/png;base64,', '', $image_data);
+                    $image_data = str_replace(' ', '+', $image_data);
+                    $decoded_image = base64_decode($image_data);
+                    
+                    if ($decoded_image === false) {
+                        throw new Exception("Failed to decode image data");
+                    }
+                    
+                    // Create upload directory if it doesn't exist
+                    $upload_dir = '../uploads/avatars/';
+                    if (!file_exists($upload_dir)) {
+                        if (!mkdir($upload_dir, 0777, true)) {
+                            throw new Exception("Failed to create upload directory");
+                        }
+                    }
+                    
+                    // Get current teacher data to delete old avatar
+                    $stmt = $pdo->prepare("SELECT avatar FROM teachers WHERE id = ?");
+                    $stmt->execute([$teacher_id]);
+                    $currentTeacher = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
+                    // Generate new filename
+                    $new_filename = 'avatar_' . $teacher_id . '_' . time() . '.png';
+                    $destination = $upload_dir . $new_filename;
+                    
+                    // Save image to file
+                    if (file_put_contents($destination, $decoded_image) === false) {
+                        throw new Exception("Failed to save image file");
+                    }
+                    
+                    $avatar_path = 'uploads/avatars/' . $new_filename;
+                    
+                    // Delete old avatar if exists
+                    if (!empty($currentTeacher['avatar']) && file_exists('../' . $currentTeacher['avatar'])) {
+                        @unlink('../' . $currentTeacher['avatar']);
+                    }
+                    
+                    // Update teacher avatar in database
+                    $stmt = $pdo->prepare("UPDATE teachers SET avatar = ? WHERE id = ?");
+                    $stmt->execute([$avatar_path, $teacher_id]);
+                    
+                    // Backup to Firebase - store base64 string in avatar field for app fetching
+                    try {
+                        require_once '../helpers/BackupHooks.php';
+                        $backupHooks = new BackupHooks();
+                        // Store base64 string in avatar field for Android app to fetch directly
+                        $updatedData = [
+                            'avatar' => $base64_string // Store base64 string instead of file path for app
+                        ];
+                        $backupHooks->backupTeacherUpdate($teacher_id, $updatedData);
+                    } catch (Exception $e) {
+                        error_log("Firebase backup failed for teacher avatar: " . $e->getMessage());
+                    }
+                    
+                    $_SESSION['success_message'] = "ID photo captured and saved successfully.";
+                } catch (Exception $e) {
+                    error_log("Error capturing ID photo: " . $e->getMessage());
+                    $_SESSION['error_message'] = "Failed to save ID photo: " . $e->getMessage();
+                }
+                break;
+
             case 'delete_teacher':
                 $teacher_id = $_POST['teacher_id'];
                 try {
@@ -257,6 +332,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     } else {
                         // Use soft delete instead of hard delete
                         if (softDelete('teachers', $teacher_id)) {
+                            // Update Firebase with deletion status
+                            try {
+                                $backupHooks = new BackupHooks();
+                                $updatedData = [
+                                    'is_deleted' => 1,
+                                    'deleted_at' => date('Y-m-d H:i:s')
+                                ];
+                                $backupHooks->backupTeacherUpdate($teacher_id, $updatedData);
+                                error_log("Firebase updated for deleted teacher ID: " . $teacher_id);
+                            } catch (Exception $e) {
+                                error_log("Firebase backup failed for teacher deletion: " . $e->getMessage());
+                                // Don't fail the deletion if Firebase update fails
+                            }
+                            
                             $_SESSION['success_message'] = "Teacher has been moved to archive.";
                         } else {
                             $_SESSION['error_message'] = "Error archiving teacher. Please try again.";
@@ -726,9 +815,10 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'find_page' && !empty($_GET['searc
                                             </td>
                                             <td><?php echo htmlspecialchars($teacher['email']); ?></td>
                                             <td><?php echo date("M d, Y h:i A", strtotime($teacher['created_at'])); ?></td>
-                                            <td class="text-end">
-                                                <div class="d-flex gap-2 justify-content-end">
-                                                    <a href="#" class="text-info" 
+                                            <td class="text-center">
+                                                <div class="d-flex gap-2 justify-content-center align-items-center">
+                                                    <a href="#" class="text-info d-inline-flex align-items-center justify-content-center" 
+                                                        style="width: 32px; height: 32px;"
                                                         data-bs-toggle="modal" 
                                                         data-bs-target="#viewTeacherModal"
                                                         data-id="<?php echo $teacher['id']; ?>"
@@ -743,13 +833,24 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'find_page' && !empty($_GET['searc
                                                         data-email="<?php echo htmlspecialchars($email); ?>"
                                                         data-created_at="<?php echo htmlspecialchars($createdAt); ?>"
                                                         data-name="<?php echo htmlspecialchars($teacher['full_name']); ?>"
+                                                        data-avatar="<?php echo htmlspecialchars($teacher['avatar'] ?? ''); ?>"
                                                         title="View Details">
                                                         <i class="bi bi-eye fs-5"></i>
                                                     </a>
-                                                    <a href="#" class="text-warning" 
-                                                            data-bs-toggle="modal" 
-                                                            data-bs-target="#editTeacherModal"
-                                                            data-id="<?php echo $teacher['id']; ?>"
+                                                    <a href="#" class="text-success capture-id-btn d-inline-flex align-items-center justify-content-center" 
+                                                        style="width: 32px; height: 32px;"
+                                                        data-bs-toggle="modal" 
+                                                        data-bs-target="#captureIdModal"
+                                                        data-teacher-id="<?php echo $teacher['id']; ?>"
+                                                        data-teacher-name="<?php echo htmlspecialchars($teacher['full_name']); ?>"
+                                                        title="Capture ID Photo">
+                                                        <i class="bi bi-camera fs-5"></i>
+                                                    </a>
+                                                    <a href="#" class="text-warning d-inline-flex align-items-center justify-content-center" 
+                                                        style="width: 32px; height: 32px;"
+                                                        data-bs-toggle="modal" 
+                                                        data-bs-target="#editTeacherModal"
+                                                        data-id="<?php echo $teacher['id']; ?>"
                                                         data-first_name="<?php echo htmlspecialchars($firstName); ?>"
                                                         data-middle_name="<?php echo htmlspecialchars($middleName); ?>"
                                                         data-last_name="<?php echo htmlspecialchars($lastName); ?>"
@@ -762,12 +863,13 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'find_page' && !empty($_GET['searc
                                                         title="Edit Teacher">
                                                         <i class="bi bi-pencil-square fs-5"></i>
                                                     </a>
-                                                    <a href="#" class="text-danger"
-                                                            data-bs-toggle="modal"
-                                                            data-bs-target="#deleteTeacherModal"
-                                                            data-id="<?php echo $teacher['id']; ?>"
-                                                            data-name="<?php echo htmlspecialchars($teacher['full_name']); ?>"
-                                                            title="Delete Teacher">
+                                                    <a href="#" class="text-danger d-inline-flex align-items-center justify-content-center"
+                                                        style="width: 32px; height: 32px;"
+                                                        data-bs-toggle="modal"
+                                                        data-bs-target="#deleteTeacherModal"
+                                                        data-id="<?php echo $teacher['id']; ?>"
+                                                        data-name="<?php echo htmlspecialchars($teacher['full_name']); ?>"
+                                                        title="Delete Teacher">
                                                         <i class="bi bi-trash fs-5"></i>
                                                     </a>
                                                 </div>
@@ -988,13 +1090,33 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'find_page' && !empty($_GET['searc
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <div class="modal-body">
+                        <!-- Teacher Photo Section -->
+                        <div class="text-center mb-4">
+                            <div class="d-inline-block position-relative" style="width: 150px; height: 150px;">
+                                <img id="modal-t-avatar" src="" alt="Teacher Photo" 
+                                     class="rounded-circle border border-3 border-primary shadow-sm" 
+                                     style="width: 150px; height: 150px; object-fit: cover; display: none; position: absolute; top: 0; left: 0; z-index: 2;">
+                                <div id="modal-t-avatar-placeholder" 
+                                     class="rounded-circle border border-3 border-primary bg-light d-flex align-items-center justify-content-center shadow-sm" 
+                                     style="width: 150px; height: 150px; position: absolute; top: 0; left: 0; z-index: 1;">
+                                    <i class="bi bi-person-fill text-muted" style="font-size: 4rem;"></i>
+                                </div>
+                            </div>
+                            <h5 class="mt-3 mb-0" id="modal-t-name"></h5>
+                            <p class="text-muted mb-0"><small>Teacher</small></p>
+                        </div>
+                        
+                        <hr class="my-4">
+                        
                         <div class="row mb-3">
-                                <div class="col-md-6">
-                                <h6 class="text-primary border-bottom border-primary pb-2 mb-3">Personal Information</h6>
+                            <div class="col-md-6">
+                                <h6 class="text-primary border-bottom border-primary pb-2 mb-3">
+                                    <i class="bi bi-person me-2"></i>Personal Information
+                                </h6>
                                 <table class="table table-borderless align-middle">
                                     <tr>
                                         <td class="align-middle" width="140"><strong>Name:</strong></td>
-                                        <td class="align-middle" id="modal-t-name"></td>
+                                        <td class="align-middle" id="modal-t-name-inline"></td>
                                     </tr>
                                     <tr>
                                         <td><strong>Sex:</strong></td>
@@ -1009,9 +1131,11 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'find_page' && !empty($_GET['searc
                                         <td id="modal-t-birthdate"></td>
                                     </tr>
                                 </table>
-                                </div>
-                                <div class="col-md-6">
-                                <h6 class="text-primary border-bottom border-primary pb-2 mb-3">Contact Information</h6>
+                            </div>
+                            <div class="col-md-6">
+                                <h6 class="text-primary border-bottom border-primary pb-2 mb-3">
+                                    <i class="bi bi-telephone me-2"></i>Contact Information
+                                </h6>
                                 <table class="table table-borderless align-middle">
                                     <tr>
                                         <td class="align-middle" width="140"><strong>Phone Number:</strong></td>
@@ -1022,10 +1146,16 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'find_page' && !empty($_GET['searc
                                         <td id="modal-t-email" style="word-break: break-word;"></td>
                                     </tr>
                                 </table>
-                                <h6 class="text-primary border-bottom border-primary pb-2 mb-3 mt-4">Academic Information</h6>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-12">
+                                <h6 class="text-primary border-bottom border-primary pb-2 mb-3">
+                                    <i class="bi bi-calendar-check me-2"></i>Academic Information
+                                </h6>
                                 <table class="table table-borderless align-middle">
                                     <tr>
-                                        <td><strong>Date Created:</strong></td>
+                                        <td width="140"><strong>Date Created:</strong></td>
                                         <td id="modal-t-created"></td>
                                     </tr>
                                 </table>
@@ -1034,6 +1164,64 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'find_page' && !empty($_GET['searc
                     </div>
                     <div class="modal-footer bg-light">
                         <!-- <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button> -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Capture ID Modal -->
+        <div class="modal fade" id="captureIdModal" tabindex="-1" aria-labelledby="captureIdModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header bg-success text-white">
+                        <h5 class="modal-title" id="captureIdModalLabel">
+                            <i class="bi bi-camera me-2"></i>Capture ID Photo
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="text-center mb-3">
+                            <p class="mb-0"><strong>Teacher:</strong> <span id="captureTeacherName"></span></p>
+                        </div>
+                        
+                        <div class="camera-container mb-3 d-flex justify-content-center align-items-center" style="min-height: 400px;">
+                            <div class="text-center" style="width: 100%;">
+                                <video id="videoElement" autoplay playsinline style="width: 100%; max-width: 640px; height: auto; border: 2px solid #ddd; border-radius: 8px; display: none; margin: 0 auto;"></video>
+                                <canvas id="canvasElement" style="display: none;"></canvas>
+                                <div id="capturedImageContainer" style="display: none; text-align: center;">
+                                    <img id="capturedImage" src="" alt="Captured ID Photo" style="max-width: 100%; max-height: 500px; border: 2px solid #ddd; border-radius: 8px; margin: 0 auto; display: block;">
+                                </div>
+                                <div id="cameraError" class="alert alert-danger" style="display: none; max-width: 640px; margin: 0 auto;"></div>
+                            </div>
+                        </div>
+                        
+                        <div class="text-center">
+                            <div id="cameraControls">
+                                <button type="button" class="btn btn-primary btn-lg" id="startCameraBtn">
+                                    <i class="bi bi-camera-video me-2"></i>Start Camera
+                                </button>
+                            </div>
+                            <div id="captureControls" style="display: none;">
+                                <button type="button" class="btn btn-success btn-lg me-2" id="captureBtn">
+                                    <i class="bi bi-camera me-2"></i>Capture Photo
+                                </button>
+                                <button type="button" class="btn btn-secondary btn-lg" id="retakeBtn">
+                                    <i class="bi bi-arrow-counterclockwise me-2"></i>Retake
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <form id="captureIdForm" method="POST" style="display: none;">
+                            <input type="hidden" name="action" value="capture_id">
+                            <input type="hidden" name="teacher_id" id="captureTeacherId">
+                            <input type="hidden" name="image_data" id="capturedImageData">
+                        </form>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn btn-success" id="submitCaptureBtn" style="display: none;">
+                            <i class="bi bi-check-circle me-2"></i>Submit ID Photo
+                        </button>
                     </div>
                 </div>
             </div>
@@ -1087,7 +1275,35 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'find_page' && !empty($_GET['searc
             if (!fullName.trim()) {
                 fullName = button.getAttribute('data-name') || '';
             }
+            
+            // Set name in both places (header and inline)
             document.getElementById('modal-t-name').textContent = fullName;
+            document.getElementById('modal-t-name-inline').textContent = fullName;
+            
+            // Set avatar
+            const avatarPath = button.getAttribute('data-avatar') || '';
+            const avatarImg = document.getElementById('modal-t-avatar');
+            const avatarPlaceholder = document.getElementById('modal-t-avatar-placeholder');
+            
+            // Reset both first
+            avatarImg.style.display = 'none';
+            avatarPlaceholder.style.display = 'flex';
+            
+            if (avatarPath && avatarPath.trim() !== '') {
+                avatarImg.onload = function() {
+                    avatarImg.style.display = 'block';
+                    avatarPlaceholder.style.display = 'none';
+                };
+                avatarImg.onerror = function() {
+                    avatarImg.style.display = 'none';
+                    avatarPlaceholder.style.display = 'flex';
+                };
+                avatarImg.src = '../' + avatarPath;
+            } else {
+                avatarImg.style.display = 'none';
+                avatarPlaceholder.style.display = 'flex';
+            }
+            
             document.getElementById('modal-t-sex').textContent = button.getAttribute('data-sex') || '';
             document.getElementById('modal-t-civil-status').textContent = button.getAttribute('data-civil_status') || '';
             document.getElementById('modal-t-birthdate').textContent = button.getAttribute('data-birth_date') || '';
@@ -1103,6 +1319,119 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'find_page' && !empty($_GET['searc
                 new bootstrap.Alert(alert).close();
             }
         }, 5000); // Dismiss after 5 seconds
+
+        // Capture ID Modal functionality
+        const captureIdModal = document.getElementById('captureIdModal');
+        let stream = null;
+        let capturedImageData = null;
+
+        captureIdModal.addEventListener('show.bs.modal', function (event) {
+            const button = event.relatedTarget;
+            const teacherId = button.getAttribute('data-teacher-id');
+            const teacherName = button.getAttribute('data-teacher-name');
+            
+            document.getElementById('captureTeacherId').value = teacherId;
+            document.getElementById('captureTeacherName').textContent = teacherName;
+            
+            // Reset modal state
+            resetCaptureModal();
+        });
+
+        captureIdModal.addEventListener('hidden.bs.modal', function () {
+            // Stop camera when modal is closed
+            stopCamera();
+            resetCaptureModal();
+        });
+
+        function resetCaptureModal() {
+            document.getElementById('videoElement').style.display = 'none';
+            document.getElementById('capturedImageContainer').style.display = 'none';
+            document.getElementById('cameraControls').style.display = 'block';
+            document.getElementById('captureControls').style.display = 'none';
+            document.getElementById('submitCaptureBtn').style.display = 'none';
+            document.getElementById('cameraError').style.display = 'none';
+            capturedImageData = null;
+        }
+
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+        }
+
+        document.getElementById('startCameraBtn').addEventListener('click', async function() {
+            const video = document.getElementById('videoElement');
+            const errorDiv = document.getElementById('cameraError');
+            
+            try {
+                // Request camera access
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: 'user',
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    } 
+                });
+                
+                video.srcObject = stream;
+                video.style.display = 'block';
+                document.getElementById('cameraControls').style.display = 'none';
+                document.getElementById('captureControls').style.display = 'block';
+                errorDiv.style.display = 'none';
+            } catch (err) {
+                console.error('Error accessing camera:', err);
+                errorDiv.textContent = 'Error accessing camera: ' + err.message;
+                errorDiv.style.display = 'block';
+                document.getElementById('cameraControls').style.display = 'block';
+            }
+        });
+
+        document.getElementById('captureBtn').addEventListener('click', function() {
+            const video = document.getElementById('videoElement');
+            const canvas = document.getElementById('canvasElement');
+            const capturedImage = document.getElementById('capturedImage');
+            const capturedImageContainer = document.getElementById('capturedImageContainer');
+            
+            // Set canvas dimensions to match video
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            
+            // Draw video frame to canvas
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Convert to base64
+            capturedImageData = canvas.toDataURL('image/png');
+            
+            // Display captured image
+            capturedImage.src = capturedImageData;
+            capturedImageContainer.style.display = 'block';
+            video.style.display = 'none';
+            document.getElementById('captureControls').style.display = 'none';
+            document.getElementById('submitCaptureBtn').style.display = 'block';
+            
+            // Stop camera
+            stopCamera();
+        });
+
+        document.getElementById('retakeBtn').addEventListener('click', function() {
+            resetCaptureModal();
+            document.getElementById('startCameraBtn').click();
+        });
+
+        document.getElementById('submitCaptureBtn').addEventListener('click', function() {
+            if (!capturedImageData) {
+                alert('Please capture a photo first.');
+                return;
+            }
+            
+            // Set image data in form
+            document.getElementById('capturedImageData').value = capturedImageData;
+            
+            // Submit form
+            document.getElementById('captureIdForm').submit();
+        });
 
         <?php if (isset($_SESSION['success_message'])): ?>
             document.addEventListener('DOMContentLoaded', function() {

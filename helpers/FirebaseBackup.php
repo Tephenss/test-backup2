@@ -158,6 +158,11 @@ class FirebaseBackup {
         }
         
         try {
+            // Handle deletions differently - actually delete from Firebase
+            if ($operation === 'deletion' || $operation === 'delete') {
+                return $this->deleteRecordFromFirebase($table, $data);
+            }
+            
             // Using public access - no token needed
             $timestamp = date('Y-m-d H:i:s');
             
@@ -213,6 +218,145 @@ class FirebaseBackup {
             
         } catch (Exception $e) {
             $this->logBackupOperation('ERROR', $table, $operation, $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Delete record from Firebase
+     */
+    private function deleteRecordFromFirebase($table, $data) {
+        try {
+            // Find all records with matching ID in the table
+            $recordId = $data['id'] ?? null;
+            if (!$recordId) {
+                error_log("No ID provided for Firebase deletion");
+                return false;
+            }
+            
+            error_log("Attempting to delete from Firebase: table={$table}, id={$recordId}");
+            
+            // Build URL to query Firebase
+            $url = $this->config['database_url'] . 'attendance_system/' . $table . '.json';
+            
+            $context = stream_context_create([
+                'ssl' => [
+                    'verify_peer' => false,
+                    'verify_peer_name' => false
+                ]
+            ]);
+            
+            $response = @file_get_contents($url, false, $context);
+            
+            if ($response === false) {
+                error_log("Failed to fetch records from Firebase for deletion");
+                return false;
+            }
+            
+            $records = json_decode($response, true);
+            
+            if (!$records || !is_array($records)) {
+                // No records to delete
+                error_log("No records found in Firebase for table {$table}");
+                return true;
+            }
+            
+            error_log("Found " . count($records) . " records in Firebase for table {$table}");
+            
+            // Log first record structure for debugging
+            if (!empty($records)) {
+                $firstRecord = reset($records);
+                error_log("Sample record structure: " . json_encode($firstRecord));
+            }
+            
+            // Find and delete ONE matching record - STRICT MATCHING
+            $deletedCount = 0;
+            $foundMatch = false;
+            
+            error_log("Searching for record with ID: {$recordId} in table: {$table}");
+            
+            foreach ($records as $key => $record) {
+                // Skip if we already found and deleted a match
+                if ($foundMatch) {
+                    break;
+                }
+                
+                $shouldDelete = false;
+                $matchReason = '';
+                
+                // STRICT MATCHING: Only delete if ID matches exactly
+                // Priority 1: Check data.id (most reliable)
+                if (isset($record['data']['id']) && $record['data']['id'] == $recordId) {
+                    $shouldDelete = true;
+                    $matchReason = 'data.id';
+                    error_log("Firebase deletion match found (data.id): key={$key}, id=" . $record['data']['id']);
+                }
+                // Priority 2: Check root id (fallback)
+                elseif (isset($record['id']) && $record['id'] == $recordId) {
+                    $shouldDelete = true;
+                    $matchReason = 'root.id';
+                    error_log("Firebase deletion match found (root.id): key={$key}, id=" . $record['id']);
+                }
+                // Priority 3: Check key pattern (last resort, but still strict)
+                // Only match if key ends with the ID or contains it with underscores
+                elseif (preg_match('/_' . preg_quote($recordId, '/') . '(_|$)/', $key)) {
+                    // Only match if key contains the ID with underscore before it and underscore or end after it
+                    $shouldDelete = true;
+                    $matchReason = 'key.pattern';
+                    error_log("Firebase deletion match found (key pattern): key={$key}");
+                }
+                
+                // DO NOT use field matching (class_id, day_of_week, etc.) as it's too broad
+                // This was causing multiple records to be deleted
+                
+                if ($shouldDelete && !$foundMatch) {
+                    // Delete this specific record
+                    $deleteUrl = $this->config['database_url'] . 'attendance_system/' . $table . '/' . urlencode($key) . '.json';
+                    
+                    error_log("Attempting to delete Firebase record: key={$key}, reason={$matchReason}, ID={$recordId}");
+                    
+                    // Use cURL for DELETE request
+                    $ch = curl_init();
+                    curl_setopt($ch, CURLOPT_URL, $deleteUrl);
+                    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+                    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+                    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+                    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+                    
+                    $deleteResponse = curl_exec($ch);
+                    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    curl_close($ch);
+                    
+                    error_log("DELETE response: HTTP {$httpCode}");
+                    
+                    if ($deleteResponse !== false && $httpCode >= 200 && $httpCode < 300) {
+                        $deletedCount++;
+                        $foundMatch = true; // Mark that we found and deleted a match
+                        error_log("✓ Successfully deleted Firebase record: key={$key} (ID: {$recordId}, reason: {$matchReason})");
+                        
+                        // Only delete ONE record - break after first successful deletion
+                        // This prevents multiple records from being deleted
+                        break;
+                    } else {
+                        error_log("✗ Failed to delete Firebase record: key={$key}, HTTP: {$httpCode}");
+                    }
+                }
+            }
+            
+            if ($deletedCount > 1) {
+                error_log("WARNING: Multiple Firebase records deleted for {$table} ID {$recordId} (count: {$deletedCount})");
+            } elseif ($deletedCount == 0) {
+                error_log("WARNING: No Firebase record found to delete for {$table} ID {$recordId}");
+            } else {
+                error_log("✓ Successfully deleted {$deletedCount} record(s) from Firebase for {$table} ID {$recordId}");
+            }
+            
+            return $deletedCount > 0;
+            
+        } catch (Exception $e) {
+            error_log("Error deleting record from Firebase: " . $e->getMessage());
             return false;
         }
     }

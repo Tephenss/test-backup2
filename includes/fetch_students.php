@@ -8,7 +8,7 @@ function getStudents($filters = []) {
               FROM students s 
               LEFT JOIN class_students cs ON s.id = cs.student_id 
               LEFT JOIN classes c ON cs.class_id = c.id 
-              WHERE s.deleted_at IS NULL";
+              WHERE s.is_deleted = 0";
     
     if (!empty($filters['section'])) {
         $query .= " AND s.section = ?";

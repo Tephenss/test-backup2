@@ -168,6 +168,23 @@ class BackupHooks {
      * Backup teacher data update
      */
     public function backupTeacherUpdate($teacherId, $updatedData) {
+        // Get complete teacher data including teacher_id
+        global $pdo;
+        try {
+            $stmt = $pdo->prepare("SELECT * FROM teachers WHERE id = ?");
+            $stmt->execute([$teacherId]);
+            $teacher = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($teacher) {
+                // Merge updated data with complete teacher data
+                $backupData = array_merge($teacher, $updatedData);
+                return $this->firebase->backupRecord('teachers', $backupData, 'update');
+            }
+        } catch (Exception $e) {
+            error_log("Error getting teacher data for update backup: " . $e->getMessage());
+        }
+        
+        // Fallback to original method if database query fails
         $backupData = array_merge(['id' => $teacherId], $updatedData);
         return $this->firebase->backupRecord('teachers', $backupData, 'update');
     }

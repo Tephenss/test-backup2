@@ -2,6 +2,7 @@
 session_start();
 require_once '../config/database.php';
 require_once '../helpers/EmailVerification.php';
+require_once '../helpers/BackupHooks.php';
 
 // Initialize error array
 $errors = [];
@@ -69,6 +70,21 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     try {
                         $log_stmt = $pdo->prepare("INSERT INTO login_logs (username, user_type, status, ip_address) VALUES (?, ?, 'failed', ?)");
                         $log_stmt->execute([$username, $user_type, $_SERVER['REMOTE_ADDR']]);
+                        
+                        // Backup login log to Firebase
+                        try {
+                            $backupHooks = new BackupHooks();
+                            $loginData = [
+                                'username' => $username,
+                                'user_type' => $user_type,
+                                'status' => 'failed',
+                                'ip_address' => $_SERVER['REMOTE_ADDR'],
+                                'timestamp' => date('Y-m-d H:i:s')
+                            ];
+                            $backupHooks->backupLoginLog($loginData);
+                        } catch (Exception $e) {
+                            error_log("Firebase backup failed for login log: " . $e->getMessage());
+                        }
                     } catch(PDOException $e) {
                         error_log("Failed to log failed login: " . $e->getMessage());
                     }
@@ -106,6 +122,21 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 try {
                     $log_stmt = $pdo->prepare("INSERT INTO login_logs (username, user_type, status, ip_address) VALUES (?, ?, 'failed', ?)");
                     $log_stmt->execute([$username, $user_type, $_SERVER['REMOTE_ADDR']]);
+                    
+                    // Backup login log to Firebase
+                    try {
+                        $backupHooks = new BackupHooks();
+                        $loginData = [
+                            'username' => $username,
+                            'user_type' => $user_type,
+                            'status' => 'failed',
+                            'ip_address' => $_SERVER['REMOTE_ADDR'],
+                            'timestamp' => date('Y-m-d H:i:s')
+                        ];
+                        $backupHooks->backupLoginLog($loginData);
+                    } catch (Exception $e) {
+                        error_log("Firebase backup failed for login log: " . $e->getMessage());
+                    }
                 } catch(PDOException $e) {
                     error_log("Failed to log failed login: " . $e->getMessage());
                 }

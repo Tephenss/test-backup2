@@ -14,53 +14,77 @@ $term = $_POST['term'] ?? '';
 
 $students = [];
 if ($class_id) {
-    if (!empty($assessment_type) && !empty($date)) {
-        $query = "
-            SELECT 
-                s.id,
-                s.student_id as roll_number,
-                CONCAT(s.first_name, ' ', s.last_name) as full_name,
-                s.course,
-                s.year_level,
-                s.section,
-                m.marks as existing_marks,
-                m.total_marks as existing_total
-            FROM students s
-            JOIN class_students cs ON s.id = cs.student_id
-            LEFT JOIN marks m ON s.id = m.student_id 
-                AND m.class_id = ? 
-                AND m.assessment_type_id = ? 
-                AND m.date = ?" 
-                . ($term ? " AND m.term = ?" : "") . "
-            WHERE cs.class_id = ? AND cs.status = 'active'
-            ORDER BY s.first_name, s.last_name
-        ";
-        $params = [$class_id, $assessment_type, $date];
-        if ($term) {
-            $params[] = $term;
+    // Get section and year_level from the class first
+    $class_stmt = $pdo->prepare("SELECT c.section, sub.year_level FROM classes c JOIN subjects sub ON c.subject_id = sub.id WHERE c.id = ?");
+    $class_stmt->execute([$class_id]);
+    $class_info = $class_stmt->fetch(PDO::FETCH_ASSOC);
+    
+    $section_name = $class_info['section'] ?? '';
+    $class_year_level = $class_info['year_level'] ?? '';
+    
+    if ($section_name && $class_year_level) {
+        if (!empty($assessment_type) && !empty($date)) {
+            $query = "
+                SELECT 
+                    s.id,
+                    s.student_id as roll_number,
+                    CONCAT(s.first_name, ' ', s.last_name) as full_name,
+                    s.course,
+                    s.year_level,
+                    s.section,
+                    m.marks as existing_marks,
+                    m.total_marks as existing_total
+                FROM students s
+                JOIN class_students cs ON s.id = cs.student_id
+                LEFT JOIN marks m ON s.id = m.student_id 
+                    AND m.class_id = ? 
+                    AND m.assessment_type_id = ? 
+                    AND m.date = ?" 
+                    . ($term ? " AND m.term = ?" : "") . "
+                WHERE cs.class_id = ? 
+                  AND cs.status = 'active'
+                  AND s.section = ?
+                  AND s.year_level = ?
+                ORDER BY s.first_name, s.last_name
+            ";
+            $params = [$class_id, $assessment_type, $date];
+            if ($term) {
+                $params[] = $term;
+            }
+            $params[] = $class_id;
+            $params[] = $section_name;
+            $params[] = $class_year_level;
+            $stmt = $pdo->prepare($query);
+            $stmt->execute($params);
+            $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } else {
+            // Fetch students matching the exact section and year_level
+            $query = "
+                SELECT 
+                    s.id,
+                    s.student_id as roll_number,
+                    CONCAT(s.first_name, ' ', s.last_name) as full_name,
+                    s.course,
+                    s.year_level,
+                    s.section
+                FROM students s
+                JOIN class_students cs ON s.id = cs.student_id
+                WHERE cs.class_id = ? 
+                  AND cs.status = 'active'
+                  AND s.section = ?
+                  AND s.year_level = ?
+                ORDER BY s.first_name, s.last_name
+            ";
+            $stmt = $pdo->prepare($query);
+            $stmt->execute([$class_id, $section_name, $class_year_level]);
+            $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
-        $params[] = $class_id;
-        $stmt = $pdo->prepare($query);
-        $stmt->execute($params);
-        $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
     } else {
-        $query = "
-            SELECT 
-                s.id,
-                s.student_id as roll_number,
-                CONCAT(s.first_name, ' ', s.last_name) as full_name,
-                s.course,
-                s.year_level,
-                s.section
-            FROM students s
-            JOIN class_students cs ON s.id = cs.student_id
-            WHERE cs.class_id = ? AND cs.status = 'active'
-            ORDER BY s.first_name, s.last_name
-        ";
-        $stmt = $pdo->prepare($query);
-        $stmt->execute([$class_id]);
-        $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $students = [];
     }
+} else {
+    // If no class_id
+    $students = [];
 }
 
 ob_start();

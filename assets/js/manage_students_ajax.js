@@ -90,10 +90,45 @@ document.addEventListener('DOMContentLoaded', function() {
                     <td>${student.full_name}</td>
                     <td>${student.email}</td>
                     <td>${student.created_at ? student.created_at : ''}</td>
-                    <td class="text-end">
-                        <a href="#" class="text-info view-student-btn" data-bs-toggle="modal" data-bs-target="#viewStudentModal" data-id="${student.id}" data-student='${JSON.stringify(student)}' title="View Details"><i class="bi bi-eye fs-5"></i></a>
-                        <a href="#" class="text-warning edit-student-btn ms-2" data-bs-toggle="modal" data-bs-target="#editStudentModal" data-id="${student.id}" data-student='${JSON.stringify(student)}' title="Edit Student"><i class="bi bi-pencil-square fs-5"></i></a>
-                        <a href="#" class="text-danger delete-student-btn ms-2" data-bs-toggle="modal" data-bs-target="#deleteStudentModal" data-id="${student.id}" data-name="${student.full_name}" title="Delete Student"><i class="bi bi-trash fs-5"></i></a>
+                    <td class="text-center">
+                        <div class="d-flex gap-2 justify-content-center align-items-center">
+                            <a href="#" class="text-success d-inline-flex align-items-center justify-content-center" 
+                                style="width: 32px; height: 32px;"
+                                data-bs-toggle="modal" 
+                                data-bs-target="#captureIdModal"
+                                data-student-id="${student.id}"
+                                data-student-name="${student.full_name}"
+                                title="Capture ID Photo">
+                                <i class="bi bi-camera fs-5"></i>
+                            </a>
+                            <a href="#" class="text-info d-inline-flex align-items-center justify-content-center" 
+                                style="width: 32px; height: 32px;"
+                                data-bs-toggle="modal" 
+                                data-bs-target="#viewStudentModal" 
+                                data-id="${student.id}" 
+                                data-student='${JSON.stringify(student)}' 
+                                title="View Details">
+                                <i class="bi bi-eye fs-5"></i>
+                            </a>
+                            <a href="#" class="text-warning d-inline-flex align-items-center justify-content-center" 
+                                style="width: 32px; height: 32px;"
+                                data-bs-toggle="modal" 
+                                data-bs-target="#editStudentModal" 
+                                data-id="${student.id}" 
+                                data-student='${JSON.stringify(student)}' 
+                                title="Edit Student">
+                                <i class="bi bi-pencil-square fs-5"></i>
+                            </a>
+                            <a href="#" class="text-danger d-inline-flex align-items-center justify-content-center" 
+                                style="width: 32px; height: 32px;"
+                                data-bs-toggle="modal" 
+                                data-bs-target="#deleteStudentModal" 
+                                data-id="${student.id}" 
+                                data-name="${student.full_name}" 
+                                title="Delete Student">
+                                <i class="bi bi-trash fs-5"></i>
+                            </a>
+                        </div>
                     </td>
                 </tr>`;
             });
@@ -125,26 +160,10 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initial render
     renderSectionButtons();
 
-    // Add event listener for view buttons after rendering
+    // Note: View student modal is now handled by Bootstrap modal event in manage_students.php
+    // Add event listener for edit buttons after rendering
     studentsList.addEventListener('click', function(e) {
-        if (e.target.closest('.view-student-btn')) {
-            const btn = e.target.closest('.view-student-btn');
-            const student = JSON.parse(btn.getAttribute('data-student'));
-            // Populate modal fields
-            document.getElementById('viewStudentId').textContent = student.student_id || '';
-            document.getElementById('viewStudentFullName').textContent = formatStudentName(student);
-            document.getElementById('viewStudentSex').textContent = student.sex || '';
-            document.getElementById('viewStudentCivilStatus').textContent = student.civil_status || '';
-            document.getElementById('viewStudentBirthdate').textContent = student.birthdate || '';
-            document.getElementById('viewStudentPlaceOfBirth').textContent = student.place_of_birth || '';
-            document.getElementById('viewStudentCitizenship').textContent = student.citizenship || '';
-            document.getElementById('viewStudentAddress').textContent = student.address || '';
-            document.getElementById('viewStudentPhone').textContent = student.phone_number || '';
-            document.getElementById('viewStudentEmail').textContent = student.email || '';
-            document.getElementById('viewStudentCourse').textContent = student.course || '';
-            document.getElementById('viewStudentYear').textContent = student.year_level || '';
-            document.getElementById('viewStudentCreated').textContent = student.created_at || '';
-        } else if (e.target.closest('.edit-student-btn')) {
+        if (e.target.closest('.edit-student-btn')) {
             const btn = e.target.closest('.edit-student-btn');
             const student = JSON.parse(btn.getAttribute('data-student'));
             

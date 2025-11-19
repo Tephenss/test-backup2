@@ -191,42 +191,134 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 break;
 
             case 'delete':
-                if (!empty($_POST['student_id'])) {
+                if (!empty($_POST['student_id']) && !empty($_POST['class_id'])) {
                     try {
+                        $student_id = intval($_POST['student_id']);
+                        $class_id = intval($_POST['class_id']);
+                        
+                        // Log for debugging
+                        error_log("Dropping student - Student ID: {$student_id}, Class ID: {$class_id}");
+                        
+                        // VALIDATION: Check if student has 5 or more absences
+                        $absenceStmt = $pdo->prepare("
+                            SELECT COUNT(*) as absence_count
+                            FROM attendance
+                            WHERE student_id = ? 
+                            AND class_id = ? 
+                            AND status = 'absent'
+                        ");
+                        $absenceStmt->execute([$student_id, $class_id]);
+                        $absenceResult = $absenceStmt->fetch(PDO::FETCH_ASSOC);
+                        $absenceCount = intval($absenceResult['absence_count'] ?? 0);
+                        
+                        // If student has less than 5 absences, prevent dropping
+                        if ($absenceCount < 5) {
+                            $_SESSION['error'] = "Cannot drop student. Student must have at least 5 absences. Current absences: {$absenceCount}";
+                            $redirect_url = "manage_students.php";
+                            if (!empty($_POST['class_id'])) {
+                                $redirect_url .= "?class_id=" . intval($_POST['class_id']);
+                            }
+                            header("Location: " . $redirect_url);
+                            exit();
+                        }
+                        
                         // Check if transaction is already active
                         if (!$pdo->inTransaction()) {
                             $pdo->beginTransaction();
                         }
                         
-                        // Delete in sequence: attendance, enrollments, student
-                        prepareAndExecute($pdo, "DELETE FROM attendance WHERE student_id = ?", 
-                            [$_POST['student_id']]
-                        );
+                        // Check if student is enrolled in this class
+                        $checkStmt = $pdo->prepare("
+                            SELECT id, status FROM class_students 
+                            WHERE student_id = ? AND class_id = ?
+                        ");
+                        $checkStmt->execute([$student_id, $class_id]);
+                        $enrollment = $checkStmt->fetch(PDO::FETCH_ASSOC);
                         
-                        prepareAndExecute($pdo, "DELETE FROM class_students WHERE student_id = ?", 
-                            [$_POST['student_id']]
-                        );
+                        if (!$enrollment) {
+                            // If not enrolled, create enrollment record with dropped status
+                            $insertStmt = $pdo->prepare("
+                                INSERT INTO class_students (class_id, student_id, status) 
+                                VALUES (?, ?, 'dropped')
+                            ");
+                            $insertStmt->execute([$class_id, $student_id]);
+                            $classStudentsUpdated = $insertStmt->rowCount();
+                            error_log("Created new class_students record with dropped status: {$classStudentsUpdated}");
+                        } else {
+                            // Update existing enrollment to dropped
+                            $stmt = $pdo->prepare("
+                                UPDATE class_students 
+                                SET status = 'dropped' 
+                                WHERE student_id = ? AND class_id = ?
+                            ");
+                            $stmt->execute([$student_id, $class_id]);
+                            $classStudentsUpdated = $stmt->rowCount();
+                            error_log("Updated class_students rows: {$classStudentsUpdated}");
+                        }
                         
-                        prepareAndExecute($pdo, "DELETE FROM students WHERE id = ?", 
-                            [$_POST['student_id']]
-                        );
+                        // Then, soft delete the student (set is_deleted = 1)
+                        $stmt = $pdo->prepare("
+                            UPDATE students 
+                            SET is_deleted = 1, 
+                                deleted_at = NOW(),
+                                status = 'deleted'
+                            WHERE id = ?
+                        ");
+                        $stmt->execute([$student_id]);
+                        $studentsUpdated = $stmt->rowCount();
+                        error_log("Updated students rows: {$studentsUpdated} (is_deleted set to 1)");
+                        
+                        // Backup to Firebase
+                        try {
+                            require_once '../helpers/BackupHooks.php';
+                            $backupHooks = new BackupHooks();
+                            
+                            // Get student data for backup
+                            $stmt = $pdo->prepare("SELECT * FROM students WHERE id = ?");
+                            $stmt->execute([$student_id]);
+                            $student = $stmt->fetch(PDO::FETCH_ASSOC);
+                            
+                            if ($student) {
+                                $updatedData = [
+                                    'is_deleted' => 1,
+                                    'deleted_at' => date('Y-m-d H:i:s'),
+                                    'status' => 'deleted'
+                                ];
+                                $backupHooks->backupStudentUpdate($student_id, $updatedData);
+                                error_log("Firebase backup completed for student {$student_id}");
+                            }
+                        } catch (Exception $e) {
+                            error_log("Firebase backup failed for student drop: " . $e->getMessage());
+                        }
                         
                         if ($pdo->inTransaction()) {
                             $pdo->commit();
                         }
-                        $_SESSION['success'] = "Student and all related records deleted successfully";
+                        
+                        if ($classStudentsUpdated > 0) {
+                            $_SESSION['success'] = "Student has been dropped and archived successfully. Student had {$absenceCount} absences.";
+                        } else {
+                            $_SESSION['error'] = "Failed to update class enrollment. Student may not be enrolled in this class.";
+                        }
                     } catch(PDOException $e) {
                         if ($pdo->inTransaction()) {
                             $pdo->rollBack();
                         }
-                        $_SESSION['error'] = "Error deleting student: " . $e->getMessage();
+                        error_log("Error dropping student: " . $e->getMessage());
+                        $_SESSION['error'] = "Error dropping student: " . $e->getMessage();
                     }
                 } else {
-                    $_SESSION['error'] = "Invalid student ID";
+                    error_log("Missing student_id or class_id - student_id: " . (isset($_POST['student_id']) ? $_POST['student_id'] : 'not set') . ", class_id: " . (isset($_POST['class_id']) ? $_POST['class_id'] : 'not set'));
+                    $_SESSION['error'] = "Invalid student ID or class ID";
                 }
                 break;
         }
-        header("Location: manage_students.php");
+        // Redirect with class_id to maintain the selected class
+        $redirect_url = "manage_students.php";
+        if (!empty($_POST['class_id'])) {
+            $redirect_url .= "?class_id=" . intval($_POST['class_id']);
+        }
+        header("Location: " . $redirect_url);
         exit();
     }
 }
@@ -237,11 +329,13 @@ try {
     $sections = $stmt->fetchAll(PDO::FETCH_COLUMN);
     if (!empty($sections)) {
         $in = str_repeat('?,', count($sections) - 1) . '?';
+        // Exclude dropped/deleted students - only show active students
         $stmt = prepareAndExecute($pdo, "
             SELECT s.* 
             FROM students s
             WHERE s.section IN ($in) 
             AND s.status NOT IN ('graduated', 'promoted')
+            AND (s.is_deleted = 0 OR s.is_deleted IS NULL)
             ORDER BY s.course, s.year_level, s.section, s.student_id
         ", $sections);
         $students = $stmt->fetchAll();
@@ -459,8 +553,8 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
                 <tbody>
                     <?php 
                     $selected_class_id = isset($_GET['class_id']) ? $_GET['class_id'] : array_key_first($available_classes);
-                    // Get section and year_level of the selected class
-                    $stmt = $pdo->prepare("SELECT c.section, s.year_level FROM classes c JOIN subjects s ON c.subject_id = s.id WHERE c.id = ?");
+                    // Get section and year_level of the selected class - use same logic as manage_attendance.php
+                    $stmt = $pdo->prepare("SELECT c.section, c.year_level FROM classes c WHERE c.id = ?");
                     $stmt->execute([$selected_class_id]);
                     $classInfo = $stmt->fetch(PDO::FETCH_ASSOC);
                     $selected_section = $classInfo['section'] ?? '';
@@ -468,10 +562,12 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
                     $hasStudent = false;
                     foreach ($students as $student): 
                         // Show only students in the selected section and year level
+                        // Also exclude dropped/deleted students
                         if (
                             $student['section'] != $selected_section ||
                             $student['year_level'] != $selected_year_level ||
-                            in_array($student['status'], ['graduated', 'promoted'])
+                            in_array($student['status'], ['graduated', 'promoted']) ||
+                            (isset($student['is_deleted']) && $student['is_deleted'] == 1)
                         ) continue;
                         $hasStudent = true;
                     ?>
@@ -485,7 +581,7 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
                                 <a href="#" class="text-info view-student-btn" data-bs-toggle="modal" data-bs-target="#viewStudentModal" data-id="<?php echo $student['id']; ?>" title="View Details">
                                     <i class="bi bi-eye fs-5"></i>
                                 </a>
-                                <a href="#" class="text-danger drop-student-btn" data-bs-toggle="modal" data-bs-target="#dropStudentModal" data-id="<?php echo $student['id']; ?>" data-name="<?php echo htmlspecialchars($student['full_name'] ?? (($student['first_name'] ?? '') . ' ' . ($student['last_name'] ?? ''))); ?>" title="Drop Student">
+                                <a href="#" class="text-danger drop-student-btn" data-bs-toggle="modal" data-bs-target="#dropStudentModal" data-id="<?php echo $student['id']; ?>" data-class-id="<?php echo $selected_class_id; ?>" data-name="<?php echo htmlspecialchars($student['full_name'] ?? (($student['first_name'] ?? '') . ' ' . ($student['last_name'] ?? ''))); ?>" title="Drop Student">
                                     <i class="bi bi-person-x fs-5"></i>
                                 </a>
                             </div>
@@ -688,6 +784,36 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
                     </div>
                     <p class="text-center">Are you sure you want to drop the student:</p>
                     <p class="text-center fw-bold fs-5" id="delete_student_name"></p>
+                    
+                    <!-- Student Absence Status -->
+                    <div class="card mb-3 border-primary shadow-sm" id="absenceStatusCard">
+                        <div class="card-body text-center">
+                            <h6 class="card-title mb-3 fw-bold">
+                                <i class="bi bi-calendar-x me-2 text-danger"></i>Absence Status
+                            </h6>
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="p-4 rounded shadow-sm" style="background-color: #fff5f5; border: 3px solid #dc3545;">
+                                        <div id="absenceCount" class="mb-2 fw-bold" style="font-size: 5rem !important; line-height: 1.2 !important; color: #dc3545 !important; text-shadow: 3px 3px 6px rgba(0,0,0,0.2) !important; display: block !important; visibility: visible !important; opacity: 1 !important;">-</div>
+                                        <div class="text-dark fw-bold" style="font-size: 1.1rem;">Total Absences</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="p-4 rounded shadow-sm" style="background-color: #f0f8ff; border: 3px solid #0d6efd;">
+                                        <div id="requiredAbsences" class="mb-2 fw-bold" style="font-size: 5rem !important; line-height: 1.2 !important; color: #0d6efd !important; text-shadow: 3px 3px 6px rgba(0,0,0,0.2) !important; display: block !important; visibility: visible !important; opacity: 1 !important;">5</div>
+                                        <div class="text-dark fw-bold" style="font-size: 1.1rem;">Required to Drop</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mt-3">
+                                <div id="absenceStatusBadge" class="badge fs-6 p-3">
+                                    <i class="bi bi-hourglass-split me-1"></i>
+                                    <span id="absenceStatusText" class="fw-bold">Checking...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
                     <div class="alert alert-warning">
                         <i class="bi bi-exclamation-circle me-2"></i>
                         This action will permanently remove:
@@ -700,13 +826,18 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
                     </div>
                 </div>
                 <div class="modal-footer justify-content-center">
-                    <form action="manage_students.php" method="POST">
+                    <form action="manage_students.php" method="POST" id="dropStudentForm">
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="student_id" id="delete_student_id">
+                        <input type="hidden" name="class_id" id="delete_class_id">
+                        <div id="dropValidationMessage" class="alert alert-warning mb-2" style="display: none;">
+                            <i class="bi bi-exclamation-triangle me-2"></i>
+                            <span id="dropValidationText"></span>
+                        </div>
                         <button type="button" class="btn btn-secondary me-2" data-bs-dismiss="modal">
                             <i class="bi bi-x-circle me-2"></i>Cancel
                         </button>
-                        <button type="submit" class="btn btn-danger">
+                        <button type="submit" class="btn btn-danger" id="dropStudentBtn">
                             <i class="bi bi-person-x me-2"></i>Drop Student
                         </button>
                     </form>
@@ -789,16 +920,238 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
             });
         });
 
-        // Add drop student functionality
+        // Flag to prevent multiple concurrent requests
+        var isFetchingAbsence = false;
+        
+        // Function to fetch and display absence data
+        function fetchAbsenceData(studentId, classId) {
+            // Prevent multiple concurrent requests
+            if (isFetchingAbsence) {
+                console.log('Already fetching absence data, skipping...');
+                return;
+            }
+            
+            var validationMsg = document.getElementById('dropValidationMessage');
+            var validationText = document.getElementById('dropValidationText');
+            var dropBtn = document.getElementById('dropStudentBtn');
+            var absenceCountEl = document.getElementById('absenceCount');
+            var absenceStatusText = document.getElementById('absenceStatusText');
+            var absenceStatusBadge = document.getElementById('absenceStatusBadge');
+            
+            // Check if elements exist
+            if (!absenceCountEl || !absenceStatusText || !absenceStatusBadge) {
+                console.error('Modal elements not found');
+                return;
+            }
+            
+            // Set flag
+            isFetchingAbsence = true;
+            
+            // Reset to loading state
+            absenceCountEl.innerHTML = '...';
+            absenceCountEl.style.display = 'block';
+            absenceCountEl.style.visibility = 'visible';
+            absenceStatusText.innerHTML = 'Checking...';
+            absenceStatusBadge.className = 'badge bg-secondary fs-6 p-2';
+            if (validationMsg) validationMsg.style.display = 'none';
+            if (dropBtn) {
+                dropBtn.disabled = true;
+                dropBtn.classList.add('disabled');
+            }
+            
+            // Create abort controller for timeout
+            var controller = new AbortController();
+            var timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+            
+            // Fetch absence count with cache busting and no-cache headers
+            var url = 'check_student_absences.php?student_id=' + studentId + '&class_id=' + classId + '&t=' + new Date().getTime();
+            console.log('Fetching absence data from:', url);
+            
+            fetch(url, {
+                method: 'GET',
+                cache: 'no-cache',
+                signal: controller.signal,
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
+            })
+                .then(response => {
+                    clearTimeout(timeoutId);
+                    console.log('Response status:', response.status);
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok: ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    isFetchingAbsence = false; // Reset flag
+                    clearTimeout(timeoutId);
+                    console.log('Received data:', data);
+                    if (data && data.success) {
+                        var absenceCount = parseInt(data.absence_count || 0);
+                        var requiredAbsences = 5;
+                        
+                        console.log('Absence count:', absenceCount);
+                        
+                        // Update absence count display
+                        if (absenceCountEl) {
+                            absenceCountEl.innerHTML = absenceCount;
+                            absenceCountEl.style.display = 'block';
+                            absenceCountEl.style.visibility = 'visible';
+                            absenceCountEl.style.opacity = '1';
+                        }
+                        
+                        // Update status badge based on absence count
+                        if (absenceCount < requiredAbsences) {
+                            // Not enough absences - show warning
+                            var remaining = requiredAbsences - absenceCount;
+                            if (absenceStatusText) {
+                                absenceStatusText.innerHTML = '<i class="bi bi-x-circle me-1"></i>Cannot Drop - Need ' + remaining + ' more absence(s)';
+                            }
+                            if (absenceStatusBadge) {
+                                absenceStatusBadge.className = 'badge bg-warning text-dark fs-6 p-2';
+                            }
+                            
+                            // Show validation message
+                            if (validationMsg) validationMsg.style.display = 'block';
+                            if (validationText) {
+                                validationText.textContent = 'Cannot drop student. Student must have at least 5 absences. Current absences: ' + absenceCount;
+                            }
+                            if (dropBtn) {
+                                dropBtn.disabled = true;
+                                dropBtn.classList.add('disabled');
+                            }
+                        } else {
+                            // Enough absences - allow drop
+                            if (absenceStatusText) {
+                                absenceStatusText.innerHTML = '<i class="bi bi-check-circle me-1"></i>Eligible to Drop';
+                            }
+                            if (absenceStatusBadge) {
+                                absenceStatusBadge.className = 'badge bg-success fs-6 p-2';
+                            }
+                            
+                            // Hide warning, enable button
+                            if (validationMsg) validationMsg.style.display = 'none';
+                            if (dropBtn) {
+                                dropBtn.disabled = false;
+                                dropBtn.classList.remove('disabled');
+                            }
+                        }
+                    } else {
+                        // Error fetching data
+                        if (absenceCountEl) absenceCountEl.innerHTML = 'Error';
+                        if (absenceStatusText) absenceStatusText.innerHTML = 'Unable to fetch absence data';
+                        if (absenceStatusBadge) absenceStatusBadge.className = 'badge bg-danger fs-6 p-2';
+                        if (validationMsg) validationMsg.style.display = 'none';
+                        if (dropBtn) {
+                            dropBtn.disabled = false;
+                            dropBtn.classList.remove('disabled');
+                        }
+                    }
+                })
+                .catch(error => {
+                    isFetchingAbsence = false; // Reset flag
+                    clearTimeout(timeoutId);
+                    console.error('Error checking absences:', error);
+                    if (error.name === 'AbortError') {
+                        console.error('Request timeout');
+                        if (absenceStatusText) {
+                            absenceStatusText.innerHTML = 'Request timeout - please try again';
+                        }
+                    } else {
+                        if (absenceStatusText) {
+                            absenceStatusText.innerHTML = 'Error loading data: ' + error.message;
+                        }
+                    }
+                    if (absenceCountEl) absenceCountEl.innerHTML = 'Error';
+                    if (absenceStatusBadge) absenceStatusBadge.className = 'badge bg-danger fs-6 p-2';
+                    if (validationMsg) validationMsg.style.display = 'none';
+                    if (dropBtn) {
+                        dropBtn.disabled = false;
+                        dropBtn.classList.remove('disabled');
+                    }
+                });
+        }
+        
+        // Reset modal state function
+        function resetModalState() {
+            // Reset fetch flag
+            isFetchingAbsence = false;
+            
+            var absenceCountEl = document.getElementById('absenceCount');
+            var absenceStatusText = document.getElementById('absenceStatusText');
+            var absenceStatusBadge = document.getElementById('absenceStatusBadge');
+            var dropBtn = document.getElementById('dropStudentBtn');
+            var validationMsg = document.getElementById('dropValidationMessage');
+            
+            if (absenceCountEl) {
+                absenceCountEl.innerHTML = '-';
+                absenceCountEl.style.display = 'block';
+                absenceCountEl.style.visibility = 'visible';
+                absenceCountEl.style.opacity = '1';
+            }
+            if (absenceStatusText) {
+                absenceStatusText.innerHTML = 'Click Drop Student button to check';
+            }
+            if (absenceStatusBadge) {
+                absenceStatusBadge.className = 'badge bg-secondary fs-6 p-2';
+            }
+            if (dropBtn) {
+                dropBtn.disabled = false;
+                dropBtn.classList.remove('disabled');
+            }
+            if (validationMsg) {
+                validationMsg.style.display = 'none';
+            }
+        }
+        
+        // Add drop student functionality with absence validation
         document.querySelectorAll('.drop-student-btn').forEach(function(btn) {
             btn.addEventListener('click', function(e) {
                 e.preventDefault();
+                e.stopPropagation();
+                
+                // Reset modal state first
+                resetModalState();
+                
                 var studentId = this.getAttribute('data-id');
+                var classId = this.getAttribute('data-class-id');
                 var studentName = this.getAttribute('data-name');
+                
+                if (!studentId || !classId) {
+                    console.error('Missing student_id or class_id');
+                    return;
+                }
+                
                 document.getElementById('delete_student_id').value = studentId;
+                document.getElementById('delete_class_id').value = classId;
                 document.getElementById('delete_student_name').textContent = studentName;
+                
+                // Small delay to ensure modal is fully shown before fetching
+                setTimeout(function() {
+                    fetchAbsenceData(studentId, classId);
+                }, 100);
             });
         });
+        
+        // Reset modal state when it's shown (for subsequent opens)
+        var dropStudentModal = document.getElementById('dropStudentModal');
+        if (dropStudentModal) {
+            // Remove any existing listeners first
+            dropStudentModal.removeEventListener('show.bs.modal', resetModalState);
+            dropStudentModal.removeEventListener('shown.bs.modal', resetModalState);
+            
+            // Add listener for when modal is about to show
+            dropStudentModal.addEventListener('show.bs.modal', function(e) {
+                resetModalState();
+            });
+            
+            // Also reset when modal is hidden (for cleanup)
+            dropStudentModal.addEventListener('hidden.bs.modal', function(e) {
+                resetModalState();
+            });
+        }
     });
     </script>
 </body>

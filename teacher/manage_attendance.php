@@ -198,17 +198,21 @@ $attendance_summary = [
     'excused' => 0
 ];
 if ($selected_class) {
-    // Get section and year_level of the selected class
-    $stmt = $pdo->prepare("SELECT c.section, s.year_level FROM classes c JOIN sections s ON c.section = s.name WHERE c.id = ?");
+    // Get section and year_level of the selected class - use same logic as manage_students.php
+    $stmt = $pdo->prepare("SELECT c.section, c.year_level FROM classes c WHERE c.id = ?");
     $stmt->execute([$selected_class]);
     $classInfo = $stmt->fetch(PDO::FETCH_ASSOC);
     $selected_section = $classInfo['section'] ?? '';
     $selected_year_level = $classInfo['year_level'] ?? '';
     if ($selected_section && $selected_year_level) {
+        // Use same filtering logic as manage_students.php - exclude dropped/deleted students
         $stmt = $pdo->prepare("
             SELECT *
             FROM students
-            WHERE section = ? AND year_level = ? AND status NOT IN ('graduated', 'promoted')
+            WHERE section = ? 
+            AND year_level = ? 
+            AND status NOT IN ('graduated', 'promoted')
+            AND (is_deleted = 0 OR is_deleted IS NULL)
             ORDER BY last_name, first_name
         ");
         $stmt->execute([$selected_section, $selected_year_level]);
