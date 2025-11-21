@@ -1,12 +1,17 @@
 <?php
 session_start();
 require_once '../config/database.php';
+require_once '../config.php';
 require_once '../helpers/BackupHooks.php';
+require_once '../helpers/RfidHelper.php';
 
 if (!isset($_SESSION['user_id']) || $_SESSION['user_type'] !== 'student') {
     header("Location: ../index.php");
     exit();
 }
+
+// Ensure RFID infrastructure exists
+ensureRfidInfrastructure($pdo);
 
 // Handle form submission for profile update
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
@@ -126,6 +131,23 @@ if ($user === false) {
     die("Failed to fetch user data");
 }
 
+// Get RFID tag information if assigned
+$rfidTag = null;
+if (!empty($user['rfid_uid'])) {
+    try {
+        $rfidStmt = $pdo->prepare("
+            SELECT rt.*, rt.tag_uid, rt.assigned_at, rt.last_seen, rt.status
+            FROM rfid_tags rt
+            WHERE rt.tag_uid = ? AND rt.student_id = ?
+            LIMIT 1
+        ");
+        $rfidStmt->execute([$user['rfid_uid'], $_SESSION['user_id']]);
+        $rfidTag = $rfidStmt->fetch(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("Error fetching RFID tag: " . $e->getMessage());
+    }
+}
+
 $shortName = '';
 if (!empty($user['first_name']) && !empty($user['last_name'])) {
     $shortName = strtoupper(substr(trim($user['first_name']), 0, 1)) . '.' . ucfirst(strtolower(trim($user['last_name'])));
@@ -239,6 +261,16 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
         .btn-primary:hover, .btn-success:hover {
             background: #388e3c;
             border-color: #2e7031;
+        }
+        .rfid-assigned {
+            border-left: 4px solid #4caf50;
+        }
+        .rfid-not-assigned {
+            border-left: 4px solid #9e9e9e;
+        }
+        .rfid-uid-display {
+            font-family: 'Courier New', monospace;
+            letter-spacing: 1px;
         }
     </style>
 </head>
@@ -398,6 +430,62 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
                     <label class="form-label">Created At</label>
                     <div class="form-control bg-light" readonly><?php echo !empty($user['created_at']) ? date('F d, Y h:i A', strtotime($user['created_at'])) : 'N/A'; ?></div>
                 </div>
+                <div class="col-md-6">
+                    <label class="form-label">Student ID</label>
+                    <div class="form-control bg-light" readonly><?php echo !empty($user['student_id']) ? htmlspecialchars($user['student_id']) : 'N/A'; ?></div>
+                </div>
+                <div class="col-md-12">
+                    <label class="form-label">
+                        <i class="bi bi-upc-scan me-1"></i>RFID Card Status
+                    </label>
+                    <?php if ($rfidTag && !empty($user['rfid_uid'])): ?>
+                        <div class="card rfid-assigned border-success">
+                            <div class="card-body">
+                                <div class="d-flex align-items-center justify-content-between mb-2">
+                                    <div>
+                                        <span class="badge bg-success mb-2">
+                                            <i class="bi bi-check-circle me-1"></i>RFID Card Assigned
+                                        </span>
+                                        <h5 class="mb-0 rfid-uid-display"><?php echo htmlspecialchars($user['rfid_uid']); ?></h5>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-primary" type="button" onclick="copyRfidToClipboard('<?php echo htmlspecialchars($user['rfid_uid']); ?>')" title="Copy RFID UID">
+                                        <i class="bi bi-clipboard me-1"></i>Copy
+                                    </button>
+                                </div>
+                                <div class="row mt-2">
+                                    <?php if ($rfidTag['assigned_at']): ?>
+                                        <div class="col-md-6">
+                                            <small class="text-muted">
+                                                <i class="bi bi-calendar3 me-1"></i><strong>Assigned:</strong> <?php echo date('M d, Y h:i A', strtotime($rfidTag['assigned_at'])); ?>
+                                            </small>
+                                        </div>
+                                    <?php endif; ?>
+                                    <?php if ($rfidTag['last_seen']): ?>
+                                        <div class="col-md-6">
+                                            <small class="text-muted">
+                                                <i class="bi bi-clock-history me-1"></i><strong>Last Seen:</strong> <?php echo date('M d, Y h:i A', strtotime($rfidTag['last_seen'])); ?>
+                                            </small>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        </div>
+                    <?php else: ?>
+                        <div class="card rfid-not-assigned border-secondary">
+                            <div class="card-body">
+                                <div class="d-flex align-items-center">
+                                    <span class="badge bg-secondary me-2">
+                                        <i class="bi bi-x-circle me-1"></i>Not Assigned
+                                    </span>
+                                    <span class="text-muted">No RFID card has been assigned to your account.</span>
+                                </div>
+                                <small class="text-muted d-block mt-2">
+                                    <i class="bi bi-info-circle me-1"></i>Please contact the administrator to request an RFID card assignment.
+                                </small>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </main>
@@ -420,17 +508,40 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="../assets/js/dashboard.js"></script>
     <script>
+        // Copy RFID to clipboard
+        function copyRfidToClipboard(rfid) {
+            navigator.clipboard.writeText(rfid).then(function() {
+                // Show toast notification
+                const toast = document.createElement('div');
+                toast.className = 'alert alert-success position-fixed top-0 end-0 m-3';
+                toast.style.zIndex = '9999';
+                toast.innerHTML = '<i class="bi bi-check-circle me-2"></i>RFID UID copied to clipboard!';
+                document.body.appendChild(toast);
+                setTimeout(function() {
+                    toast.classList.add('fade-out');
+                    setTimeout(function() {
+                        toast.remove();
+                    }, 300);
+                }, 2000);
+            }).catch(function(err) {
+                console.error('Failed to copy:', err);
+            });
+        }
+        
         document.addEventListener('DOMContentLoaded', function() {
-        // Password confirmation validation
-        document.getElementById('confirm_password').addEventListener('input', function() {
-            const newPassword = document.getElementById('new_password').value;
-            const confirmPassword = this.value;
-            if (newPassword !== confirmPassword) {
-                this.setCustomValidity('Passwords do not match');
-            } else {
-                this.setCustomValidity('');
-            }
-        });
+        // Password confirmation validation (if password fields exist)
+        const confirmPasswordField = document.getElementById('confirm_password');
+        if (confirmPasswordField) {
+            confirmPasswordField.addEventListener('input', function() {
+                const newPassword = document.getElementById('new_password').value;
+                const confirmPassword = this.value;
+                if (newPassword !== confirmPassword) {
+                    this.setCustomValidity('Passwords do not match');
+                } else {
+                    this.setCustomValidity('');
+                }
+            });
+        }
 
         // Auto-hide alerts
             const alerts = document.querySelectorAll('.alert');

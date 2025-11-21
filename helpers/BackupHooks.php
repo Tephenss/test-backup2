@@ -103,6 +103,13 @@ class BackupHooks {
     public function backupSubjectCreation($subjectData) {
         return $this->firebase->backupRecord('subjects', $subjectData, 'insert');
     }
+
+    /**
+     * Backup RFID tag events
+     */
+    public function backupRfidTagEvent($rfidData, $operation = 'insert') {
+        return $this->firebase->backupRecord('rfid_tags', $rfidData, $operation);
+    }
     
     /**
      * Backup activity log

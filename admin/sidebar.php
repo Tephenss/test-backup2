@@ -17,6 +17,7 @@
         <li class="nav-item"><a class="nav-link" href="manage_timetable.php"><i class="bi bi-calendar-week"></i><span>Timetable</span></a></li>
         <li class="nav-item"><a class="nav-link" href="promote_students.php"><i class="bi bi-arrow-up-circle"></i><span>Promote Students</span></a></li>
         <li class="nav-item"><a class="nav-link" href="setup_firebase.php"><i class="bi bi-cloud"></i><span>Firebase Setup</span></a></li>
+        <li class="nav-item"><a class="nav-link" href="manage_rfid.php"><i class="bi bi-upc-scan"></i><span>Manage RFID</span></a></li>
         <li class="nav-item"><a class="nav-link" href="manage_archive.php"><i class="bi bi-archive"></i><span>Archive</span></a></li>
     </ul>
     

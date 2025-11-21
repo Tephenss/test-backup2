@@ -561,6 +561,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                                     <tr><td><strong>Year Level:</strong></td><td id="viewStudentYear"></td></tr>
                                     <tr><td><strong>Created At:</strong></td><td id="viewStudentCreated"></td></tr>
                                 </table>
+                                <h6 class="text-primary border-bottom border-primary pb-2 mb-3 mt-4">
+                                    <i class="bi bi-upc-scan me-2"></i>RFID Card Information
+                                </h6>
+                                <div id="viewStudentRfidContainer">
+                                    <table class="table table-borderless mb-3">
+                                        <tr><td width="140"><strong>RFID Status:</strong></td><td id="viewStudentRfidStatus"></td></tr>
+                                        <tr id="viewStudentRfidRow" style="display: none;"><td><strong>RFID UID:</strong></td><td id="viewStudentRfidUid"></td></tr>
+                                        <tr id="viewStudentRfidAssignedRow" style="display: none;"><td><strong>Assigned At:</strong></td><td id="viewStudentRfidAssigned"></td></tr>
+                                        <tr id="viewStudentRfidLastSeenRow" style="display: none;"><td><strong>Last Seen:</strong></td><td id="viewStudentRfidLastSeen"></td></tr>
+                                    </table>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -754,7 +765,107 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     }
                 }
                 setTextContent('viewStudentCreated', createdText);
+                
+                // Fetch and display RFID information
+                // Use student.id (database ID) for fetching RFID
+                const studentDbId = student.id;
+                if (studentDbId) {
+                    fetchRfidInfo(studentDbId);
+                } else {
+                    setRfidStatus('Not Available', 'secondary');
+                }
             });
+        }
+        
+        // Function to fetch RFID information for a student
+        function fetchRfidInfo(studentId) {
+            if (!studentId) {
+                setRfidStatus('Not Available', 'secondary');
+                return;
+            }
+            
+            // Reset RFID fields
+            document.getElementById('viewStudentRfidRow').style.display = 'none';
+            document.getElementById('viewStudentRfidAssignedRow').style.display = 'none';
+            document.getElementById('viewStudentRfidLastSeenRow').style.display = 'none';
+            
+            // Fetch RFID data via AJAX
+            fetch(`rfid_actions.php?action=get_student_rfid&student_id=${studentId}`, {
+                method: 'GET',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                credentials: 'same-origin'
+            })
+            .then(response => response.json())
+            .then(data => {
+                    if (data.success && data.rfid && data.rfid.tag_uid) {
+                        const rfid = data.rfid;
+                        // RFID is assigned
+                        setRfidStatus('Assigned', 'success');
+                        
+                        // Display UID with monospace font
+                        const uidEl = document.getElementById('viewStudentRfidUid');
+                        if (uidEl) {
+                            uidEl.innerHTML = `<code class="bg-light px-2 py-1 rounded" style="font-family: monospace; font-size: 1.1em; letter-spacing: 1px;">${rfid.tag_uid}</code>`;
+                            document.getElementById('viewStudentRfidRow').style.display = '';
+                        }
+                        
+                        if (rfid.assigned_at) {
+                            const assignedDate = new Date(rfid.assigned_at);
+                            const assignedEl = document.getElementById('viewStudentRfidAssigned');
+                            if (assignedEl) {
+                                assignedEl.textContent = assignedDate.toLocaleDateString('en-US', { 
+                                    year: 'numeric', 
+                                    month: 'long', 
+                                    day: 'numeric', 
+                                    hour: 'numeric', 
+                                    minute: '2-digit', 
+                                    hour12: true 
+                                });
+                                document.getElementById('viewStudentRfidAssignedRow').style.display = '';
+                            }
+                        }
+                        
+                        if (rfid.last_seen) {
+                            const lastSeenDate = new Date(rfid.last_seen);
+                            const lastSeenEl = document.getElementById('viewStudentRfidLastSeen');
+                            if (lastSeenEl) {
+                                lastSeenEl.textContent = lastSeenDate.toLocaleDateString('en-US', { 
+                                    year: 'numeric', 
+                                    month: 'long', 
+                                    day: 'numeric', 
+                                    hour: 'numeric', 
+                                    minute: '2-digit', 
+                                    hour12: true 
+                                });
+                                document.getElementById('viewStudentRfidLastSeenRow').style.display = '';
+                            }
+                        }
+                    } else {
+                        setRfidStatus('Not Assigned', 'secondary');
+                    }
+            })
+            .catch(error => {
+                console.error('Error fetching RFID info:', error);
+                setRfidStatus('Not Available', 'secondary');
+            });
+        }
+        
+        // Helper function to set RFID status
+        function setRfidStatus(status, badgeType) {
+            const statusEl = document.getElementById('viewStudentRfidStatus');
+            if (statusEl) {
+                const badgeClass = badgeType === 'success' ? 'bg-success' : 'bg-secondary';
+                statusEl.innerHTML = `<span class="badge ${badgeClass}">${status}</span>`;
+            }
+            
+            // Hide RFID details if not assigned
+            if (status !== 'Assigned') {
+                document.getElementById('viewStudentRfidRow').style.display = 'none';
+                document.getElementById('viewStudentRfidAssignedRow').style.display = 'none';
+                document.getElementById('viewStudentRfidLastSeenRow').style.display = 'none';
+            }
         }
     </script>
     <script>

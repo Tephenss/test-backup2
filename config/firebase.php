@@ -40,7 +40,8 @@ return [
         'subject_assignments',
         'timetable',
         'assessment_types',
-        'semester_settings'
+        'semester_settings',
+        'rfid_tags'
     ],
     
     // Retry settings
