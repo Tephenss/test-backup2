@@ -160,6 +160,43 @@ class BackupHooks {
             if ($student) {
                 // Merge updated data with complete student data
                 $backupData = array_merge($student, $updatedData);
+                
+                // CRITICAL: Preserve profile_picture base64 string for Android app
+                // When updating other fields (like rfid_uid), we must preserve the existing base64 string in Firebase
+                // MySQL stores file paths, but Firebase needs base64 for the Android app
+                
+                // First, try to get existing base64 from Firebase (to preserve it)
+                $existingFirebasePic = $this->getExistingFirebaseProfilePicture($studentId);
+                
+                // Check if profile_picture is being explicitly updated with base64 string
+                if (isset($updatedData['profile_picture'])) {
+                    if (strpos($updatedData['profile_picture'], 'data:image') === 0) {
+                        // Explicitly updating with base64 string - use it
+                        $backupData['profile_picture'] = $updatedData['profile_picture'];
+                    } else {
+                        // Explicitly updating but not base64 - use the new value (might be file path)
+                        $backupData['profile_picture'] = $updatedData['profile_picture'];
+                    }
+                } elseif ($existingFirebasePic) {
+                    // Not updating profile_picture, but Firebase has base64 - preserve it
+                    $backupData['profile_picture'] = $existingFirebasePic;
+                } elseif (!empty($backupData['profile_picture']) && strpos($backupData['profile_picture'], 'uploads/') === 0) {
+                    // No existing Firebase base64, and MySQL has file path - convert to base64
+                    $filePath = '../' . $backupData['profile_picture'];
+                    if (file_exists($filePath)) {
+                        try {
+                            $imageData = file_get_contents($filePath);
+                            if ($imageData !== false) {
+                                $mimeType = mime_content_type($filePath) ?: 'image/png';
+                                $base64String = base64_encode($imageData);
+                                $backupData['profile_picture'] = 'data:' . $mimeType . ';base64,' . $base64String;
+                            }
+                        } catch (Exception $e) {
+                            error_log("Error converting profile picture to base64: " . $e->getMessage());
+                        }
+                    }
+                }
+                
                 return $this->firebase->backupRecord('students', $backupData, 'update');
             }
         } catch (Exception $e) {
@@ -169,6 +206,120 @@ class BackupHooks {
         // Fallback to original method if database query fails
         $backupData = array_merge(['id' => $studentId], $updatedData);
         return $this->firebase->backupRecord('students', $backupData, 'update');
+    }
+    
+    /**
+     * Get existing profile_picture base64 from Firebase to preserve it
+     */
+    private function getExistingFirebaseProfilePicture($studentId) {
+        try {
+            $firebaseConfig = require __DIR__ . '/../config/firebase.php';
+            $firebaseUrl = rtrim($firebaseConfig['database_url'], '/');
+            
+            // Try to fetch all student records from Firebase and find matching ID
+            $url = $firebaseUrl . '/attendance_system/students.json';
+            $context = stream_context_create([
+                'http' => [
+                    'timeout' => 5
+                ],
+                'ssl' => [
+                    'verify_peer' => false,
+                    'verify_peer_name' => false
+                ]
+            ]);
+            $response = @file_get_contents($url, false, $context);
+            
+            if ($response !== false && $response !== 'null') {
+                $data = json_decode($response, true);
+                if ($data && is_array($data)) {
+                    // Search through all student records
+                    foreach ($data as $key => $record) {
+                        // Handle different Firebase storage structures
+                        $recordData = null;
+                        if (isset($record['data']) && is_array($record['data'])) {
+                            $recordData = $record['data'];
+                        } elseif (is_array($record)) {
+                            $recordData = $record;
+                        }
+                        
+                        if ($recordData && isset($recordData['id']) && $recordData['id'] == $studentId) {
+                            if (isset($recordData['profile_picture']) && !empty($recordData['profile_picture'])) {
+                                $profilePic = $recordData['profile_picture'];
+                                // Check if it's a base64 string (starts with 'data:image')
+                                if (strpos($profilePic, 'data:image') === 0) {
+                                    return $profilePic; // Return existing base64 string
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            error_log("Error fetching existing Firebase profile picture for student {$studentId}: " . $e->getMessage());
+        }
+        
+        return null; // Return null if not found
+    }
+    
+    /**
+     * Get existing avatar base64 from Firebase to preserve it (for teachers)
+     */
+    private function getExistingFirebaseTeacherAvatar($teacherId) {
+        try {
+            $firebaseConfig = require __DIR__ . '/../config/firebase.php';
+            $firebaseUrl = rtrim($firebaseConfig['database_url'], '/');
+            
+            // Try to fetch all teacher records from Firebase and find matching ID
+            $url = $firebaseUrl . '/attendance_system/teachers.json';
+            $context = stream_context_create([
+                'http' => [
+                    'timeout' => 5
+                ],
+                'ssl' => [
+                    'verify_peer' => false,
+                    'verify_peer_name' => false
+                ]
+            ]);
+            $response = @file_get_contents($url, false, $context);
+            
+            if ($response !== false && $response !== 'null') {
+                $data = json_decode($response, true);
+                if ($data && is_array($data)) {
+                    // Search through all teacher records
+                    foreach ($data as $key => $record) {
+                        // Handle different Firebase storage structures
+                        $recordData = null;
+                        if (isset($record['data']) && is_array($record['data'])) {
+                            $recordData = $record['data'];
+                        } elseif (is_array($record)) {
+                            $recordData = $record;
+                        }
+                        
+                        if ($recordData && isset($recordData['id']) && $recordData['id'] == $teacherId) {
+                            // Check avatar field
+                            if (isset($recordData['avatar']) && !empty($recordData['avatar'])) {
+                                $avatar = $recordData['avatar'];
+                                // Check if it's a base64 string (starts with 'data:image')
+                                if (strpos($avatar, 'data:image') === 0) {
+                                    return $avatar; // Return existing base64 string
+                                }
+                            }
+                            // Also check profile_picture field
+                            if (isset($recordData['profile_picture']) && !empty($recordData['profile_picture'])) {
+                                $profilePic = $recordData['profile_picture'];
+                                if (strpos($profilePic, 'data:image') === 0) {
+                                    return $profilePic; // Return existing base64 string
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            error_log("Error fetching existing Firebase avatar for teacher {$teacherId}: " . $e->getMessage());
+        }
+        
+        return null; // Return null if not found
     }
     
     /**
@@ -185,6 +336,65 @@ class BackupHooks {
             if ($teacher) {
                 // Merge updated data with complete teacher data
                 $backupData = array_merge($teacher, $updatedData);
+                
+                // CRITICAL: Preserve avatar/profile_picture base64 string for Android app
+                // When updating other fields, we must preserve the existing base64 string in Firebase
+                // MySQL stores file paths, but Firebase needs base64 for the Android app
+                
+                // First, try to get existing base64 from Firebase (to preserve it)
+                $existingFirebasePic = $this->getExistingFirebaseTeacherAvatar($teacherId);
+                
+                // Check if avatar is being explicitly updated with base64 string
+                if (isset($updatedData['avatar'])) {
+                    if (strpos($updatedData['avatar'], 'data:image') === 0) {
+                        // Explicitly updating with base64 string - use it
+                        $backupData['avatar'] = $updatedData['avatar'];
+                    } else {
+                        // Explicitly updating but not base64 - use the new value (might be file path)
+                        $backupData['avatar'] = $updatedData['avatar'];
+                    }
+                } elseif ($existingFirebasePic) {
+                    // Not updating avatar, but Firebase has base64 - preserve it
+                    $backupData['avatar'] = $existingFirebasePic;
+                } elseif (!empty($backupData['avatar']) && (strpos($backupData['avatar'], 'uploads/') === 0 || strpos($backupData['avatar'], 'avatars/') !== false)) {
+                    // No existing Firebase base64, and MySQL has file path - convert to base64
+                    $filePath = '../' . $backupData['avatar'];
+                    if (file_exists($filePath)) {
+                        try {
+                            $imageData = file_get_contents($filePath);
+                            if ($imageData !== false) {
+                                $mimeType = mime_content_type($filePath) ?: 'image/png';
+                                $base64String = base64_encode($imageData);
+                                $backupData['avatar'] = 'data:' . $mimeType . ';base64,' . $base64String;
+                            }
+                        } catch (Exception $e) {
+                            error_log("Error converting teacher avatar to base64: " . $e->getMessage());
+                        }
+                    }
+                }
+                
+                // Also handle profile_picture field (if used instead of avatar)
+                if (isset($updatedData['profile_picture'])) {
+                    if (strpos($updatedData['profile_picture'], 'data:image') === 0) {
+                        $backupData['profile_picture'] = $updatedData['profile_picture'];
+                    }
+                } elseif (!empty($backupData['profile_picture']) && strpos($backupData['profile_picture'], 'data:image') !== 0) {
+                    // Convert profile_picture file path to base64 if needed
+                    $filePath = '../' . $backupData['profile_picture'];
+                    if (file_exists($filePath)) {
+                        try {
+                            $imageData = file_get_contents($filePath);
+                            if ($imageData !== false) {
+                                $mimeType = mime_content_type($filePath) ?: 'image/png';
+                                $base64String = base64_encode($imageData);
+                                $backupData['profile_picture'] = 'data:' . $mimeType . ';base64,' . $base64String;
+                            }
+                        } catch (Exception $e) {
+                            error_log("Error converting teacher profile_picture to base64: " . $e->getMessage());
+                        }
+                    }
+                }
+                
                 return $this->firebase->backupRecord('teachers', $backupData, 'update');
             }
         } catch (Exception $e) {

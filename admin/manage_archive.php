@@ -122,7 +122,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $student_id = $_POST['student_id'];
             
+            // Get student data BEFORE deletion for Firebase sync
+            $studentStmt = $pdo->prepare("SELECT * FROM students WHERE id = ? AND is_deleted = 1");
+            $studentStmt->execute([$student_id]);
+            $studentData = $studentStmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$studentData) {
+                $_SESSION['error'] = "Student not found or already active.";
+                header('Location: manage_archive.php');
+                exit();
+            }
+            
+            // Check if student has RFID tags assigned - block/unassign them before deletion
+            $rfidTagsStmt = $pdo->prepare("SELECT id, tag_uid FROM rfid_tags WHERE student_id = ?");
+            $rfidTagsStmt->execute([$student_id]);
+            $assignedTags = $rfidTagsStmt->fetchAll(PDO::FETCH_ASSOC);
+            
             $pdo->beginTransaction();
+            
+            // Block/unassign all RFID tags assigned to this student BEFORE deletion
+            if (!empty($assignedTags)) {
+                // Clear ALL tags assigned to this student (unassign them)
+                $pdo->prepare("UPDATE rfid_tags SET student_id = NULL, status = 'available', assigned_at = NULL WHERE student_id = ?")
+                    ->execute([$student_id]);
+                
+                // Delete the tags from rfid_tags table (permanently block them)
+                foreach ($assignedTags as $tag) {
+                    $tagId = $tag['id'];
+                    $deleteTagStmt = $pdo->prepare("DELETE FROM rfid_tags WHERE id = ?");
+                    $deleteTagStmt->execute([$tagId]);
+                    error_log("Blocked RFID tag ID {$tagId} (UID: {$tag['tag_uid']}) during student permanent deletion");
+                }
+                
+                // Clear student's rfid_uid in database (should already be NULL if student is deleted, but ensure it)
+                $clearRfidStmt = $pdo->prepare("UPDATE students SET rfid_uid = NULL WHERE id = ?");
+                $clearRfidStmt->execute([$student_id]);
+            }
             
             // Delete related records first
             $stmt = $pdo->prepare("DELETE FROM class_students WHERE student_id = ?");
@@ -138,12 +173,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->commit();
             
             if ($stmt->rowCount() > 0) {
-                $_SESSION['success'] = "Student has been permanently deleted.";
+                // Sync deletion to Firebase
+                try {
+                    require_once '../helpers/BackupHooks.php';
+                    $backupHooks = new BackupHooks();
+                    
+                    // Backup RFID tag deletions to Firebase
+                    if (!empty($assignedTags)) {
+                        foreach ($assignedTags as $tag) {
+                            try {
+                                $backupHooks->backupRfidTagEvent($tag, 'deletion');
+                                error_log("Firebase deletion synced for RFID tag ID {$tag['id']} (UID: {$tag['tag_uid']})");
+                            } catch (Exception $e) {
+                                error_log("Firebase backup failed for tag deletion (ID: {$tag['id']}): " . $e->getMessage());
+                            }
+                        }
+                        
+                        // Clear student's rfid_uid in Firebase
+                        $backupHooks->backupStudentUpdate($student_id, ['rfid_uid' => '']);
+                        error_log("Cleared student rfid_uid in Firebase for permanently deleted student ID: {$student_id}");
+                    }
+                    
+                    // Backup student deletion to Firebase
+                    $backupHooks->backupStudentDeletion($student_id, $studentData);
+                    error_log("Firebase deletion synced for permanently deleted student ID: {$student_id}");
+                } catch (Exception $e) {
+                    error_log("Firebase deletion sync failed for student ID {$student_id}: " . $e->getMessage());
+                    // Don't fail the deletion if Firebase sync fails
+                }
+                
+                $tagCount = count($assignedTags);
+                $successMsg = "Student has been permanently deleted.";
+                if ($tagCount > 0) {
+                    $successMsg .= " {$tagCount} RFID tag(s) assigned to this student have been automatically blocked.";
+                }
+                $_SESSION['success'] = $successMsg;
             } else {
                 $_SESSION['error'] = "Student not found or already active.";
             }
         } catch (PDOException $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             $_SESSION['error'] = "Error permanently deleting student: " . $e->getMessage();
         }
         

@@ -1,0 +1,13 @@
+SQL: INSERT INTO semester_settings (semester, start_date, end_date, prelim_start, prelim_end, midterm_start, midterm_end, final_start, final_end, is_current) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
+Params: Array
+(
+    [0] => 1st Semester
+    [1] => 2025-08-04
+    [2] => 2025-12-20
+    [3] => 2025-08-04
+    [4] => 2025-09-19
+    [5] => 2025-09-19
+    [6] => 2025-11-04
+    [7] => 2025-11-04
+    [8] => 2025-12-20
+)

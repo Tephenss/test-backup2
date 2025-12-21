@@ -83,7 +83,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                         
                         // Enroll student in selected classes
                         if (!empty($_POST['classes']) && is_array($_POST['classes'])) {
-                            $enrollStmt = $pdo->prepare("INSERT INTO class_students (class_id, student_id) VALUES (?, ?)");
+                            require_once '../helpers/BackupHooks.php';
+                            $backupHooks = new BackupHooks();
+                            
+                            $enrollStmt = $pdo->prepare("INSERT INTO class_students (class_id, student_id, status) VALUES (?, ?, 'active') ON DUPLICATE KEY UPDATE status = 'active'");
                             if ($enrollStmt === false) {
                                 throw new PDOException("Failed to prepare enrollment statement");
                             }
@@ -91,6 +94,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                             foreach ($_POST['classes'] as $class_id) {
                                 if (!$enrollStmt->execute([$class_id, $student_id])) {
                                     throw new PDOException("Failed to enroll student in class");
+                                }
+                                
+                                // Backup enrollment to Firebase
+                                try {
+                                    $enrollmentData = [
+                                        'class_id' => (string)$class_id,
+                                        'student_id' => (string)$student_id,
+                                        'status' => 'active',
+                                        'enrolled_at' => date('Y-m-d H:i:s')
+                                    ];
+                                    $backupHooks->backupClassEnrollment($enrollmentData);
+                                } catch (Exception $e) {
+                                    error_log("Firebase backup failed for enrollment: " . $e->getMessage());
                                 }
                             }
                         }
@@ -165,7 +181,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 
                         // Then add new enrollments
                         if (!empty($_POST['classes']) && is_array($_POST['classes'])) {
-                            $enrollStmt = $pdo->prepare("INSERT INTO class_students (class_id, student_id) VALUES (?, ?)");
+                            require_once '../helpers/BackupHooks.php';
+                            $backupHooks = new BackupHooks();
+                            
+                            $enrollStmt = $pdo->prepare("INSERT INTO class_students (class_id, student_id, status) VALUES (?, ?, 'active') ON DUPLICATE KEY UPDATE status = 'active'");
                             if ($enrollStmt === false) {
                                 throw new PDOException("Failed to prepare enrollment statement");
                             }
@@ -173,6 +192,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                             foreach ($_POST['classes'] as $class_id) {
                                 if (!$enrollStmt->execute([$class_id, $_POST['id']])) {
                                     throw new PDOException("Failed to enroll student in class");
+                                }
+                                
+                                // Backup enrollment to Firebase
+                                try {
+                                    $enrollmentData = [
+                                        'class_id' => (string)$class_id,
+                                        'student_id' => (string)$_POST['id'],
+                                        'status' => 'active',
+                                        'enrolled_at' => date('Y-m-d H:i:s')
+                                    ];
+                                    $backupHooks->backupClassEnrollment($enrollmentData);
+                                } catch (Exception $e) {
+                                    error_log("Firebase backup failed for enrollment: " . $e->getMessage());
                                 }
                             }
                         }
@@ -256,24 +288,35 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                             error_log("Updated class_students rows: {$classStudentsUpdated}");
                         }
                         
-                        // Then, soft delete the student (set is_deleted = 1)
+                        // Teacher drop: Mark student as dropped (soft delete) but keep status as 'approved'
+                        // This ensures the student appears in "Drop Student" tab, not "Deleted Students" tab
+                        // Only set is_deleted = 1 and deleted_at, but keep status as 'approved' (not 'deleted')
                         $stmt = $pdo->prepare("
                             UPDATE students 
                             SET is_deleted = 1, 
-                                deleted_at = NOW(),
-                                status = 'deleted'
-                            WHERE id = ?
+                                deleted_at = NOW()
+                            WHERE id = ? AND status != 'deleted'
                         ");
                         $stmt->execute([$student_id]);
                         $studentsUpdated = $stmt->rowCount();
-                        error_log("Updated students rows: {$studentsUpdated} (is_deleted set to 1)");
+                        error_log("Updated students rows: {$studentsUpdated} (is_deleted set to 1 for drop)");
                         
-                        // Backup to Firebase
+                        // Backup class enrollment to Firebase
                         try {
                             require_once '../helpers/BackupHooks.php';
                             $backupHooks = new BackupHooks();
                             
-                            // Get student data for backup
+                            // Get updated enrollment for backup
+                            $stmt = $pdo->prepare("SELECT * FROM class_students WHERE student_id = ? AND class_id = ?");
+                            $stmt->execute([$student_id, $class_id]);
+                            $enrollment = $stmt->fetch(PDO::FETCH_ASSOC);
+                            
+                            if ($enrollment) {
+                                $backupHooks->backupGenericRecord('class_students', $enrollment, 'update');
+                                error_log("Firebase backup completed for dropped enrollment: student {$student_id}, class {$class_id}");
+                            }
+                            
+                            // Get student data for backup (keep status as 'approved', not 'deleted')
                             $stmt = $pdo->prepare("SELECT * FROM students WHERE id = ?");
                             $stmt->execute([$student_id]);
                             $student = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -281,11 +324,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                             if ($student) {
                                 $updatedData = [
                                     'is_deleted' => 1,
-                                    'deleted_at' => date('Y-m-d H:i:s'),
-                                    'status' => 'deleted'
+                                    'deleted_at' => date('Y-m-d H:i:s')
+                                    // Do NOT set status = 'deleted' - keep it as 'approved' so it appears in Drop Student tab
                                 ];
                                 $backupHooks->backupStudentUpdate($student_id, $updatedData);
-                                error_log("Firebase backup completed for student {$student_id}");
+                                error_log("Firebase backup completed for dropped student {$student_id}");
                             }
                         } catch (Exception $e) {
                             error_log("Firebase backup failed for student drop: " . $e->getMessage());
@@ -855,6 +898,24 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
+            <!-- Student Photo Section -->
+            <div class="text-center mb-4">
+                <div class="d-inline-block position-relative" style="width: 150px; height: 150px;">
+                    <img id="modal-s-avatar" src="" alt="Student Photo" 
+                         class="rounded-circle border border-3 border-primary shadow-sm" 
+                         style="width: 150px; height: 150px; object-fit: cover; display: none; position: absolute; top: 0; left: 0; z-index: 2;">
+                    <div id="modal-s-avatar-placeholder" 
+                         class="rounded-circle border border-3 border-primary bg-light d-flex align-items-center justify-content-center shadow-sm" 
+                         style="width: 150px; height: 150px; position: absolute; top: 0; left: 0; z-index: 1;">
+                        <i class="bi bi-person-fill text-muted" style="font-size: 4rem;"></i>
+                    </div>
+                </div>
+                <h5 class="mt-3 mb-0" id="modal-s-name"></h5>
+                <p class="text-muted mb-0"><small>Student</small></p>
+            </div>
+            
+            <hr class="my-4">
+            
             <div class="row">
               <div class="col-md-6">
                 <h6 class="text-primary border-bottom border-primary pb-2 mb-3">Personal Information</h6>
@@ -902,20 +963,76 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
                 var students = <?php echo json_encode($students); ?>;
                 var student = students.find(s => String(s.id) === String(studentId));
                 if (student) {
-                    document.getElementById('viewStudentId').textContent = student.student_id || '';
-                    document.getElementById('viewStudentFullName').textContent = student.full_name || ((student.first_name || '') + ' ' + (student.last_name || ''));
-                    document.getElementById('viewStudentSex').textContent = student.sex || '';
-                    document.getElementById('viewStudentCivilStatus').textContent = student.civil_status || '';
-                    document.getElementById('viewStudentBirthdate').textContent = student.birthdate || '';
-                    document.getElementById('viewStudentPlaceOfBirth').textContent = student.place_of_birth || '';
-                    document.getElementById('viewStudentCitizenship').textContent = student.citizenship || '';
-                    document.getElementById('viewStudentAddress').textContent = student.address || '';
-                    document.getElementById('viewStudentPhone').textContent = student.phone_number || '';
-                    document.getElementById('viewStudentEmail').textContent = student.email || '';
-                    document.getElementById('viewStudentCourse').textContent = student.course || '';
-                    document.getElementById('viewStudentYear').textContent = student.year_level || '';
-                    document.getElementById('viewStudentSection').textContent = student.section || '';
-                    document.getElementById('viewStudentCreated').textContent = student.created_at || '';
+                    // Format student name
+                    var fullName = student.full_name || ((student.first_name || '') + ' ' + (student.last_name || ''));
+                    if (student.first_name && student.last_name) {
+                        var nameParts = [];
+                        if (student.last_name) nameParts.push(student.last_name);
+                        if (student.first_name) nameParts.push(student.first_name);
+                        if (student.middle_name) {
+                            var middleInitial = student.middle_name.charAt(0).toUpperCase() + '.';
+                            nameParts.push(middleInitial);
+                        }
+                        if (student.suffix_name) nameParts.push(student.suffix_name);
+                        fullName = nameParts.join(', ');
+                    }
+                    
+                    // Set name in header
+                    var nameEl = document.getElementById('modal-s-name');
+                    if (nameEl) nameEl.textContent = fullName;
+                    
+                    // Set avatar/profile picture
+                    var avatarPath = student.profile_picture || '';
+                    var avatarImg = document.getElementById('modal-s-avatar');
+                    var avatarPlaceholder = document.getElementById('modal-s-avatar-placeholder');
+                    
+                    if (avatarImg && avatarPlaceholder) {
+                        avatarImg.style.display = 'none';
+                        avatarPlaceholder.style.display = 'flex';
+                        
+                        if (avatarPath && avatarPath.trim() !== '') {
+                            // Check if it's a base64 string (starts with data:image)
+                            if (avatarPath.startsWith('data:image')) {
+                                // It's a base64 string, use it directly
+                                avatarImg.onload = function() {
+                                    avatarImg.style.display = 'block';
+                                    avatarPlaceholder.style.display = 'none';
+                                };
+                                avatarImg.onerror = function() {
+                                    avatarImg.style.display = 'none';
+                                    avatarPlaceholder.style.display = 'flex';
+                                };
+                                avatarImg.src = avatarPath;
+                            } else {
+                                // It's a file path
+                                avatarImg.onload = function() {
+                                    avatarImg.style.display = 'block';
+                                    avatarPlaceholder.style.display = 'none';
+                                };
+                                avatarImg.onerror = function() {
+                                    avatarImg.style.display = 'none';
+                                    avatarPlaceholder.style.display = 'flex';
+                                };
+                                avatarImg.src = '../' + avatarPath;
+                            }
+                        }
+                    }
+                    
+                    // Set other fields
+                    document.getElementById('viewStudentId').textContent = student.student_id || 'N/A';
+                    document.getElementById('viewStudentFullName').textContent = fullName || 'N/A';
+                    document.getElementById('viewStudentSex').textContent = student.sex || 'N/A';
+                    document.getElementById('viewStudentCivilStatus').textContent = student.civil_status || 'N/A';
+                    document.getElementById('viewStudentBirthdate').textContent = student.birthdate || 'N/A';
+                    document.getElementById('viewStudentPlaceOfBirth').textContent = student.place_of_birth || 'N/A';
+                    document.getElementById('viewStudentCitizenship').textContent = student.citizenship || 'N/A';
+                    document.getElementById('viewStudentAddress').textContent = student.address || 'N/A';
+                    document.getElementById('viewStudentPhone').textContent = student.phone_number || 'N/A';
+                    document.getElementById('viewStudentEmail').textContent = student.email || 'N/A';
+                    document.getElementById('viewStudentCourse').textContent = student.course || 'N/A';
+                    document.getElementById('viewStudentYear').textContent = student.year_level || 'N/A';
+                    document.getElementById('viewStudentSection').textContent = student.section || 'N/A';
+                    document.getElementById('viewStudentCreated').textContent = student.created_at || 'N/A';
                 }
             });
         });

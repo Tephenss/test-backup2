@@ -41,6 +41,35 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['action'])) {
             $result = $stmt->fetch();
             
             if ($result && password_verify($password, $result['password'])) {
+                // For students, check if they're still using default password (birthdate)
+                if ($type === 'student' && isset($result['birthdate'])) {
+                    // Check if the entered password (plain text) matches the birthdate in any format
+                    $birthdate = $result['birthdate'];
+                    $birthdateFormats = [
+                        $birthdate, // Original format from DB (Y-m-d)
+                        date('Y-m-d', strtotime($birthdate)), // Ensure Y-m-d format
+                        date('Y/m/d', strtotime($birthdate)), // Y/m/d format
+                    ];
+                    
+                    // Remove duplicates and empty values
+                    $birthdateFormats = array_unique(array_filter($birthdateFormats));
+                    
+                    // Check if entered password matches any birthdate format
+                    $isDefaultPassword = false;
+                    foreach ($birthdateFormats as $bd) {
+                        if ($password === $bd) {
+                            $isDefaultPassword = true;
+                            break;
+                        }
+                    }
+                    
+                    if ($isDefaultPassword) {
+                        $_SESSION['login_error'] = "You are still using the default password. Please change your password first using the 'Recover My Account' feature on the login page.";
+                        header("Location: " . $_SERVER['PHP_SELF']);
+                        exit();
+                    }
+                }
+                
                 $user = $result;
                 $user_type = $type;
                 break;
@@ -267,7 +296,8 @@ if (isset($_SESSION['login_error'])) {
                                placeholder="Password"
                                autocomplete="off"
                                data-lpignore="true"
-                               data-form-type="other">
+                               data-form-type="other"
+                               style="padding-right: 45px;">
                         <div class="password-toggle" id="togglePassword">
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-eye" viewBox="0 0 16 16">
                                 <path d="M16 8s-3-5.5-8-5.5S0 8 0 8s3 5.5 8 5.5S16 8 16 8zM1.173 8a13.133 13.133 0 0 1 1.66-2.043C4.12 4.668 5.88 3.5 8 3.5c2.12 0 3.879 1.168 5.168 2.457A13.133 13.133 0 0 1 14.828 8c-.058.087-.122.183-.195.288-.335.48-.83 1.12-1.465 1.755C11.879 11.332 10.119 12.5 8 12.5c-2.12 0-3.879-1.168-5.168-2.457A13.134 13.134 0 0 1 1.172 8z"/>

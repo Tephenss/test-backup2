@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once '../config/database.php';
+require_once '../config.php';
 
 // Check if user is logged in as admin
 if (!isset($_SESSION['user_id']) || $_SESSION['user_type'] !== 'admin') {
@@ -119,18 +120,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['action'])) {
         switch ($_POST['action']) {
             case 'assign_subject':
-                $teacher_id = $_POST['teacher_id'];
-                $section_id = $_POST['section_id'];
-                $start_date = $_POST['start_date'];
-                $end_date = $_POST['end_date'];
-                $semester = $_POST['semester'];
-                $year_level = $_POST['year_level'];
+                // Validate and sanitize input
+                $teacher_id = isset($_POST['teacher_id']) ? trim($_POST['teacher_id']) : '';
+                $section_id = isset($_POST['section_id']) ? trim($_POST['section_id']) : '';
+                $start_date = isset($_POST['start_date']) ? trim($_POST['start_date']) : '';
+                $end_date = isset($_POST['end_date']) ? trim($_POST['end_date']) : '';
+                $semester = isset($_POST['semester']) ? trim($_POST['semester']) : '';
+                $year_level = isset($_POST['year_level']) ? trim($_POST['year_level']) : '';
                 $academic_year = isset($_POST['academic_year']) ? $_POST['academic_year'] : date('Y') . '-' . (date('Y')+1);
+                
                 // Support multiple subject assignment
-                $subject_ids = isset($_POST['subject_ids']) ? $_POST['subject_ids'] : (isset($_POST['subject_id']) ? [$_POST['subject_id']] : []);
-                if (empty($subject_ids) || !$teacher_id || !$section_id || !$semester) {
-                    $_SESSION['error_message'] = "Please select a teacher, section, semester, and at least one subject.";
-                    break;
+                $subject_ids = [];
+                if (isset($_POST['subject_ids']) && is_array($_POST['subject_ids'])) {
+                    $subject_ids = array_filter(array_map('trim', $_POST['subject_ids']), function($id) {
+                        return !empty($id);
+                    });
+                } elseif (isset($_POST['subject_id']) && !empty(trim($_POST['subject_id']))) {
+                    $subject_ids = [trim($_POST['subject_id'])];
+                }
+                
+                // Enhanced validation with proper error handling
+                if (empty($subject_ids)) {
+                    $_SESSION['error_message'] = "Please select at least one subject.";
+                    header("Location: manage_subjects.php");
+                    exit();
+                }
+                
+                if (empty($teacher_id) || empty($section_id) || empty($semester) || empty($year_level)) {
+                    $_SESSION['error_message'] = "Please fill in all required fields: Teacher, Section, Semester, and Year Level.";
+                    header("Location: manage_subjects.php");
+                    exit();
+                }
+                
+                if (empty($start_date) || empty($end_date)) {
+                    $_SESSION['error_message'] = "Semester dates are missing. Please refresh the page and try again.";
+                    header("Location: manage_subjects.php");
+                    exit();
                 }
                 // --- LIMIT: Only 2 subjects per teacher per year level and section ---
                 $stmtLimit = $pdo->prepare("SELECT COUNT(*) FROM subject_assignments sa JOIN sections sec ON sa.section_id = sec.id WHERE sa.teacher_id = ? AND sa.section_id = ? AND sec.year_level = ? AND sa.semester = ?");
@@ -144,6 +169,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $error_count = 0;
                 foreach ($subject_ids as $subject_id) {
                     if (!$subject_id) continue;
+                    
+                    // Convert to integer and validate
+                    $subject_id = (int)$subject_id;
+                    if ($subject_id <= 0) {
+                        $error_count++;
+                        continue;
+                    }
+                    
+                    // Verify subject exists and is not deleted
+                    $stmtCheckSubject = $pdo->prepare("SELECT id FROM subjects WHERE id = ? AND is_deleted = 0");
+                    $stmtCheckSubject->execute([$subject_id]);
+                    if (!$stmtCheckSubject->fetch()) {
+                        error_log("Subject ID $subject_id does not exist or is deleted");
+                        $error_count++;
+                        continue;
+                    }
+                    
                     $stmtLimit->execute([$teacher_id, $section_id, $year_level, $semester]);
                     $currentCount = $stmtLimit->fetchColumn();
                     if ($currentCount >= 2) {
@@ -160,12 +202,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $stmt = $pdo->prepare("INSERT INTO subject_assignments 
                                 (teacher_id, subject_id, section_id, start_date, end_date, semester) 
                                 VALUES (?, ?, ?, ?, ?, ?)");
-                            $stmt->execute([$teacher_id, $subject_id, $section_id, $start_date, $end_date, $semester]);
-                            if ($stmt->errorCode() !== '00000') {
-                                file_put_contents(__DIR__ . '/debug_sql_error.txt', print_r($stmt->errorInfo(), true));
+                            $result = $stmt->execute([$teacher_id, $subject_id, $section_id, $start_date, $end_date, $semester]);
+                            
+                            if (!$result || $stmt->errorCode() !== '00000') {
+                                $errorInfo = $stmt->errorInfo();
+                                file_put_contents(__DIR__ . '/debug_sql_error.txt', print_r([
+                                    'errorCode' => $stmt->errorCode(),
+                                    'errorInfo' => $errorInfo,
+                                    'params' => [$teacher_id, $subject_id, $section_id, $start_date, $end_date, $semester]
+                                ], true));
                                 $error_count++;
                                 continue;
                             }
+                            
+                            // Get the inserted assignment ID
+                            $assignment_id = $pdo->lastInsertId();
+                            if (!$assignment_id || $assignment_id == 0) {
+                                // Try to verify the insert actually happened by checking the last inserted record
+                                $stmtVerify = $pdo->prepare("SELECT id FROM subject_assignments WHERE teacher_id = ? AND subject_id = ? AND section_id = ? AND semester = ? ORDER BY id DESC LIMIT 1");
+                                $stmtVerify->execute([$teacher_id, $subject_id, $section_id, $semester]);
+                                $verified = $stmtVerify->fetch(PDO::FETCH_ASSOC);
+                                
+                                if ($verified && $verified['id']) {
+                                    $assignment_id = $verified['id'];
+                                } else {
+                                    error_log("Warning: Failed to get assignment ID after insert. Last insert ID: " . $pdo->lastInsertId());
+                                    file_put_contents(__DIR__ . '/debug_insert_id_error.txt', "Assignment insert may have failed. Last insert ID: " . $pdo->lastInsertId());
+                                    $error_count++;
+                                    continue;
+                                }
+                            }
+                            
                             $success_count++;
                             // --- AUTO-CREATE CLASS RECORD IF NOT EXISTS ---
                             $stmtSection = $pdo->prepare("SELECT name, year_level FROM sections WHERE id = ?");
@@ -173,16 +240,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $section_row = $stmtSection->fetch(PDO::FETCH_ASSOC);
                             $section_name = $section_row['name'];
                             $year_level_val = $section_row['year_level'];
+                            // Convert semester to integer if it's a string like "1st Semester" or "2nd Semester"
+                            $semester_int = $semester;
+                            if (is_string($semester) && stripos($semester, 'semester') !== false) {
+                                $semester_int = (stripos($semester, '1st') !== false || stripos($semester, 'first') !== false) ? 1 : 2;
+                            }
+                            
                             $stmtClass = $pdo->prepare("SELECT id FROM classes WHERE teacher_id = ? AND section = ? AND subject_id = ? AND academic_year = ? AND semester = ?");
-                            $stmtClass->execute([$teacher_id, $section_name, $subject_id, $academic_year, $semester]);
-                            if (!$stmtClass->fetch()) {
+                            $stmtClass->execute([$teacher_id, $section_name, $subject_id, $academic_year, $semester_int]);
+                            $existingClass = $stmtClass->fetch(PDO::FETCH_ASSOC);
+                            
+                            if (!$existingClass) {
+                                // Class doesn't exist, create it
                                 $stmtInsert = $pdo->prepare("INSERT INTO classes (teacher_id, section, subject_id, academic_year, semester, year_level, status) VALUES (?, ?, ?, ?, ?, ?, 'active')");
-                                $stmtInsert->execute([$teacher_id, $section_name, $subject_id, $academic_year, $semester, $year_level_val]);
+                                $insertResult = $stmtInsert->execute([$teacher_id, $section_name, $subject_id, $academic_year, $semester_int, $year_level_val]);
                                 
-                                // Get the inserted class ID
-                                $class_id = $pdo->lastInsertId();
-                                
-                                // Backup class creation to Firebase with correct year_level
+                                if (!$insertResult || $stmtInsert->errorCode() !== '00000') {
+                                    $errorInfo = $stmtInsert->errorInfo();
+                                    // If it's a duplicate entry error, that's okay - the class already exists (race condition)
+                                    if ($errorInfo[0] === '23000' && strpos($errorInfo[2], 'Duplicate entry') !== false) {
+                                        // Class was created by another process, fetch it
+                                        $stmtClass->execute([$teacher_id, $section_name, $subject_id, $academic_year, $semester_int]);
+                                        $existingClass = $stmtClass->fetch(PDO::FETCH_ASSOC);
+                                        if ($existingClass) {
+                                            $class_id = $existingClass['id'];
+                                        } else {
+                                            error_log("Duplicate class error but could not find existing class");
+                                            // Continue anyway, assignment was successful
+                                        }
+                                    } else {
+                                        error_log("Error inserting class: " . print_r($errorInfo, true));
+                                        file_put_contents(__DIR__ . '/debug_class_insert_error.txt', print_r([
+                                            'errorCode' => $stmtInsert->errorCode(),
+                                            'errorInfo' => $errorInfo,
+                                            'params' => [$teacher_id, $section_name, $subject_id, $academic_year, $semester_int, $year_level_val],
+                                            'assignment_id' => $assignment_id
+                                        ], true));
+                                        // Continue anyway, assignment was successful
+                                    }
+                                } else {
+                                    // Get the inserted class ID
+                                    $class_id = $pdo->lastInsertId();
+                                    
+                                    if (!$class_id || $class_id == 0) {
+                                        // Try to verify the insert actually happened
+                                        $stmtVerify = $pdo->prepare("SELECT id FROM classes WHERE teacher_id = ? AND section = ? AND subject_id = ? AND academic_year = ? AND semester = ? ORDER BY id DESC LIMIT 1");
+                                        $stmtVerify->execute([$teacher_id, $section_name, $subject_id, $academic_year, $semester_int]);
+                                        $verified = $stmtVerify->fetch(PDO::FETCH_ASSOC);
+                                        if ($verified && $verified['id']) {
+                                            $class_id = $verified['id'];
+                                        } else {
+                                            error_log("Warning: Failed to get class ID after insert. Assignment ID: " . $assignment_id);
+                                            file_put_contents(__DIR__ . '/debug_class_id_error.txt', "Class insert may have failed. Assignment ID: " . $assignment_id . ", Last insert ID: " . $pdo->lastInsertId());
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Class already exists
+                                $class_id = $existingClass['id'];
+                            }
+                            
+                            // Backup class creation to Firebase if we have a valid class_id
+                            if (isset($class_id) && $class_id > 0) {
                                 try {
                                     require_once '../helpers/BackupHooks.php';
                                     $backupHooks = new BackupHooks();
@@ -214,36 +333,124 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $_SESSION['success_message'] = "Subject(s) successfully assigned to teacher.";
                 } elseif ($error_count > 0) {
                     $_SESSION['error_message'] = "Some or all subjects could not be assigned (may already be assigned or an error occurred).";
+                } else {
+                    $_SESSION['error_message'] = "No subjects were assigned. Please check your selections and try again.";
                 }
+                header("Location: manage_subjects.php");
+                exit();
                 break;
 
             case 'add_subject':
-                $subject_code = $_POST['subject_code'];
-                $subject_name = $_POST['subject_name'];
-                $description = $_POST['description'];
-                $units = $_POST['units'];
-                $year_level = $_POST['year_level'];
+                // Validate required fields
+                $subject_code = isset($_POST['subject_code']) ? trim($_POST['subject_code']) : '';
+                $subject_name = isset($_POST['subject_name']) ? trim($_POST['subject_name']) : '';
+                $description = isset($_POST['description']) ? trim($_POST['description']) : '';
+                $units = isset($_POST['units']) ? (int)$_POST['units'] : 0;
+                $year_level = isset($_POST['year_level']) ? (int)$_POST['year_level'] : 0;
+                
+                // Validation
+                if (empty($subject_code) || empty($subject_name)) {
+                    $_SESSION['error_message'] = "Subject code and name are required.";
+                    header("Location: manage_subjects.php");
+                    exit();
+                }
+                
+                if ($units <= 0 || $units > 6) {
+                    $_SESSION['error_message'] = "Units must be between 1 and 6.";
+                    header("Location: manage_subjects.php");
+                    exit();
+                }
+                
+                if ($year_level < 1 || $year_level > 4) {
+                    $_SESSION['error_message'] = "Year level must be between 1 and 4.";
+                    header("Location: manage_subjects.php");
+                    exit();
+                }
+                
                 try {
+                    // Check if subject code already exists
+                    $stmtCheck = $pdo->prepare("SELECT id FROM subjects WHERE subject_code = ? AND is_deleted = 0");
+                    $stmtCheck->execute([$subject_code]);
+                    if ($stmtCheck->fetch()) {
+                        $_SESSION['error_message'] = "Subject code already exists.";
+                        header("Location: manage_subjects.php");
+                        exit();
+                    }
+                    
+                    // Insert the subject
                     $stmt = $pdo->prepare("INSERT INTO subjects (subject_code, subject_name, description, units, year_level) VALUES (?, ?, ?, ?, ?)");
-                    $stmt->execute([$subject_code, $subject_name, $description, $units, $year_level]);
-                    $_SESSION['success_message'] = "Subject added successfully.";
+                    $result = $stmt->execute([$subject_code, $subject_name, $description, $units, $year_level]);
+                    
+                    if (!$result || $stmt->errorCode() !== '00000') {
+                        $errorInfo = $stmt->errorInfo();
+                        error_log("Error inserting subject: " . print_r($errorInfo, true));
+                        file_put_contents(__DIR__ . '/debug_add_subject_error.txt', print_r([
+                            'errorCode' => $stmt->errorCode(),
+                            'errorInfo' => $errorInfo,
+                            'params' => [$subject_code, $subject_name, $description, $units, $year_level]
+                        ], true));
+                        $_SESSION['error_message'] = "Error adding subject. Please try again.";
+                        header("Location: manage_subjects.php");
+                        exit();
+                    }
+                    
+                    // Get the inserted subject ID
+                    $subject_id = $pdo->lastInsertId();
+                    
+                    if (!$subject_id || $subject_id == 0) {
+                        // Try to verify the insert actually happened by checking the last inserted record
+                        $stmtVerify = $pdo->prepare("SELECT id FROM subjects WHERE subject_code = ? AND subject_name = ? ORDER BY id DESC LIMIT 1");
+                        $stmtVerify->execute([$subject_code, $subject_name]);
+                        $verified = $stmtVerify->fetch(PDO::FETCH_ASSOC);
+                        
+                        if ($verified && $verified['id']) {
+                            $subject_id = $verified['id'];
+                            $_SESSION['success_message'] = "Subject added successfully with ID: " . $subject_id;
+                        } else {
+                            error_log("Warning: Failed to get subject ID after insert. Last insert ID: " . $pdo->lastInsertId());
+                            file_put_contents(__DIR__ . '/debug_subject_id_error.txt', "Subject insert may have failed. Last insert ID: " . $pdo->lastInsertId());
+                            $_SESSION['error_message'] = "Error: Subject was not saved properly. Please try again.";
+                            header("Location: manage_subjects.php");
+                            exit();
+                        }
+                    } else {
+                        $_SESSION['success_message'] = "Subject added successfully with ID: " . $subject_id;
+                    }
                 } catch(PDOException $e) {
+                    error_log("PDO Exception in add_subject: " . $e->getMessage());
                     $_SESSION['error_message'] = "Error adding subject: " . $e->getMessage();
                 }
+                header("Location: manage_subjects.php");
+                exit();
                 break;
 
             case 'remove_assignment':
-                $assignment_id = $_POST['assignment_id'];
+                if (!isset($_POST['assignment_id']) || empty($_POST['assignment_id'])) {
+                    $_SESSION['error_message'] = "Error: Assignment ID is required.";
+                    header("Location: manage_subjects.php");
+                    exit();
+                }
+                
+                $assignment_id = filter_var($_POST['assignment_id'], FILTER_VALIDATE_INT);
+                if ($assignment_id === false || $assignment_id <= 0) {
+                    $_SESSION['error_message'] = "Error: Invalid assignment ID.";
+                    header("Location: manage_subjects.php");
+                    exit();
+                }
+                
                 try {
-                    // Get assignment details before deleting
+                    // First, try to find in subject_assignments table
                     $stmt = $pdo->prepare("SELECT teacher_id, subject_id, section_id, semester FROM subject_assignments WHERE id = ?");
                     $stmt->execute([$assignment_id]);
                     $assignment = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
                     if ($assignment) {
+                        // Found in subject_assignments - delete from both tables
                         // Get section name
                         $stmtSection = $pdo->prepare("SELECT name FROM sections WHERE id = ?");
                         $stmtSection->execute([$assignment['section_id']]);
                         $section_name = $stmtSection->fetchColumn();
+                        
                         // Delete class record(s) for this assignment
                         $stmtDeleteClass = $pdo->prepare("DELETE FROM classes WHERE teacher_id = ? AND subject_id = ? AND section = ? AND semester = ?");
                         $stmtDeleteClass->execute([
@@ -252,19 +459,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $section_name,
                             $assignment['semester']
                         ]);
+                        
+                        // Delete the assignment from subject_assignments
+                        $stmt = $pdo->prepare("DELETE FROM subject_assignments WHERE id = ?");
+                        $stmt->execute([$assignment_id]);
+                        
+                        $deletedRows = $stmt->rowCount();
+                        if ($deletedRows > 0) {
+                            $_SESSION['success_message'] = "Subject assignment removed successfully.";
+                            // Clear any error messages that might be lingering
+                            unset($_SESSION['error_message']);
+                        } else {
+                            $_SESSION['error_message'] = "Error: Assignment was not deleted. It may have already been removed.";
+                        }
+                    } else {
+                        // Not found in subject_assignments - check if it's a class_id
+                        $stmtClass = $pdo->prepare("SELECT teacher_id, subject_id, section, semester FROM classes WHERE id = ? AND status = 'active'");
+                        $stmtClass->execute([$assignment_id]);
+                        $class = $stmtClass->fetch(PDO::FETCH_ASSOC);
+                        
+                        if ($class) {
+                            // Found in classes table - delete the class
+                            // Also delete related records
+                            $stmtDeleteTimetable = $pdo->prepare("DELETE FROM timetable WHERE class_id = ?");
+                            $stmtDeleteTimetable->execute([$assignment_id]);
+                            
+                            $stmtDeleteClassStudents = $pdo->prepare("DELETE FROM class_students WHERE class_id = ?");
+                            $stmtDeleteClassStudents->execute([$assignment_id]);
+                            
+                            $stmtDeleteAttendance = $pdo->prepare("DELETE FROM attendance WHERE class_id = ?");
+                            $stmtDeleteAttendance->execute([$assignment_id]);
+                            
+                            // Delete the class
+                            $stmtDeleteClass = $pdo->prepare("DELETE FROM classes WHERE id = ?");
+                            $stmtDeleteClass->execute([$assignment_id]);
+                            
+                            $deletedRows = $stmtDeleteClass->rowCount();
+                            if ($deletedRows > 0) {
+                                $_SESSION['success_message'] = "Class and related records removed successfully.";
+                                // Clear any error messages that might be lingering
+                                unset($_SESSION['error_message']);
+                            } else {
+                                $_SESSION['error_message'] = "Error: Class was not deleted. It may have already been removed.";
+                            }
+                        } else {
+                            $_SESSION['error_message'] = "Error: Assignment not found in subject_assignments or classes table.";
+                        }
                     }
-                    // Delete the assignment
-                    $stmt = $pdo->prepare("DELETE FROM subject_assignments WHERE id = ?");
-                    $stmt->execute([$assignment_id]);
-                    $_SESSION['success_message'] = "Subject assignment removed successfully.";
                 } catch(PDOException $e) {
                     $_SESSION['error_message'] = "Error removing assignment: " . $e->getMessage();
+                    error_log("Error removing assignment: " . $e->getMessage());
                 }
+                header("Location: manage_subjects.php");
+                exit();
                 break;
 
             case 'delete_subject':
-                $subject_id = $_POST['subject_id'];
+                // Validate that subject_id is set and is a valid integer
+                if (!isset($_POST['subject_id']) || empty($_POST['subject_id'])) {
+                    $_SESSION['error_message'] = "Error: Subject ID is required.";
+                    header("Location: manage_subjects.php");
+                    exit();
+                }
+                
+                $subject_id = filter_var($_POST['subject_id'], FILTER_VALIDATE_INT);
+                if ($subject_id === false || $subject_id <= 0) {
+                    $_SESSION['error_message'] = "Error: Invalid subject ID.";
+                    header("Location: manage_subjects.php");
+                    exit();
+                }
+                
                 try {
+                    // Verify the subject exists before attempting to delete
+                    $stmtCheck = $pdo->prepare("SELECT id FROM subjects WHERE id = ?");
+                    $stmtCheck->execute([$subject_id]);
+                    if (!$stmtCheck->fetch()) {
+                        $_SESSION['error_message'] = "Error: Subject not found.";
+                        header("Location: manage_subjects.php");
+                        exit();
+                    }
+                    
                     // Check if subject is assigned to any active classes
                     $stmt = $pdo->prepare("
                         SELECT COUNT(*) 
@@ -292,9 +566,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
 
             case 'delete_all_subjects':
+                // Require explicit confirmation token to prevent accidental deletion
+                if (!isset($_POST['confirm_delete_all']) || $_POST['confirm_delete_all'] !== 'CONFIRM_DELETE_ALL_SUBJECTS') {
+                    $_SESSION['error_message'] = "Error: Confirmation required to delete all subjects.";
+                    header("Location: manage_subjects.php");
+                    exit();
+                }
+                
                 try {
                     // Get all subject IDs
-                    $stmt = $pdo->query("SELECT id FROM subjects");
+                    $stmt = $pdo->query("SELECT id FROM subjects WHERE is_deleted = 0");
                     $subjectIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
                     foreach ($subjectIds as $subject_id) {
                         // Get all class IDs for this subject
@@ -311,8 +592,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $stmt2 = $pdo->prepare("DELETE FROM classes WHERE subject_id = ?");
                         $stmt2->execute([$subject_id]);
                     }
-                    // Delete all subjects
-                    $stmt = $pdo->prepare("DELETE FROM subjects");
+                    // Soft delete all subjects (use soft delete instead of hard delete)
+                    $stmt = $pdo->prepare("UPDATE subjects SET is_deleted = 1, deleted_at = NOW() WHERE is_deleted = 0");
                     $stmt->execute();
                     $_SESSION['success_message'] = "All subjects and their related data have been deleted.";
                 } catch(PDOException $e) {
@@ -528,22 +809,99 @@ try {
 }
 
 // Get current assignments with current semester settings
+// First try to get from subject_assignments, then fallback to classes table if needed
 try {
-    $stmt = $pdo->query("
+    // Try fetching from subject_assignments first
+    $stmtAssignments = $pdo->query("
         SELECT sa.id, sa.section_id, t.teacher_id AS formatted_teacher_id, t.full_name as teacher_name, s.subject_code, s.subject_name,
                sec.name as section_name, sec.year_level, sa.start_date, sa.end_date,
-               COALESCE(sa.semester, ss.semester) as semester, 
-               'Prelim' as term_period
+               COALESCE(sa.semester, ss.semester) as semester
         FROM subject_assignments sa
-        JOIN teachers t ON sa.teacher_id = t.id
-        JOIN subjects s ON sa.subject_id = s.id
-        JOIN sections sec ON sa.section_id = sec.id
+        LEFT JOIN teachers t ON sa.teacher_id = t.id
+        LEFT JOIN subjects s ON sa.subject_id = s.id
+        LEFT JOIN sections sec ON sa.section_id = sec.id
         LEFT JOIN semester_settings ss ON ss.is_current = TRUE
-        ORDER BY sec.year_level, sa.semester, s.subject_code, sec.name
+        WHERE t.id IS NOT NULL AND s.id IS NOT NULL AND sec.id IS NOT NULL
+        ORDER BY sec.year_level, COALESCE(sa.semester, ss.semester), s.subject_code, sec.name
     ");
-    $assignments = $stmt->fetchAll();
+    $assignments = $stmtAssignments->fetchAll();
+    
+    // Also fetch from classes table and merge with subject_assignments
+    // This ensures we show all classes even if they're not in subject_assignments
+    $stmtClasses = $pdo->query("
+        SELECT DISTINCT
+               sa.id,
+               c.id as class_id,
+               sec.id as section_id,
+               t.teacher_id AS formatted_teacher_id,
+               t.full_name as teacher_name,
+               s.subject_code,
+               s.subject_name,
+               sec.name as section_name,
+               COALESCE(c.year_level, s.year_level, sec.year_level) as year_level,
+               sa.start_date,
+               sa.end_date,
+               COALESCE(sa.semester, c.semester, ss.semester) as semester
+        FROM classes c
+        LEFT JOIN teachers t ON c.teacher_id = t.id
+        LEFT JOIN subjects s ON c.subject_id = s.id
+        LEFT JOIN sections sec ON c.section = sec.name AND COALESCE(c.year_level, s.year_level) = sec.year_level
+        LEFT JOIN subject_assignments sa ON sa.teacher_id = c.teacher_id 
+            AND sa.subject_id = c.subject_id 
+            AND sa.section_id = sec.id
+        LEFT JOIN semester_settings ss ON ss.is_current = TRUE
+        WHERE c.status = 'active'
+          AND t.id IS NOT NULL
+          AND s.id IS NOT NULL
+        ORDER BY year_level, COALESCE(sa.semester, c.semester, ss.semester), s.subject_code, sec.name
+    ");
+    $classesAssignments = $stmtClasses->fetchAll();
+    
+    // Merge assignments, prioritizing subject_assignments data
+    $mergedAssignments = [];
+    $seenIds = [];
+    
+    // First add all from subject_assignments
+    foreach ($assignments as $assign) {
+        if (isset($assign['id'])) {
+            $mergedAssignments[] = $assign;
+            $seenIds[$assign['id']] = true;
+        }
+    }
+    
+    // Then add from classes that don't have subject_assignments or use class_id as id
+    foreach ($classesAssignments as $classAssign) {
+        // If it has a subject_assignments id that we already added, skip
+        if (isset($classAssign['id']) && isset($seenIds[$classAssign['id']])) {
+            continue;
+        }
+        // If no subject_assignments id but has class_id, use class_id as id for deletion
+        if (!isset($classAssign['id']) && isset($classAssign['class_id'])) {
+            $classAssign['id'] = $classAssign['class_id'];
+        }
+        // Only add if it has an id
+        if (isset($classAssign['id'])) {
+            $mergedAssignments[] = $classAssign;
+            if (isset($classAssign['id'])) {
+                $seenIds[$classAssign['id']] = true;
+            }
+        }
+    }
+    
+    $assignments = $mergedAssignments;
+    
+    // Debug: Log assignment count
+    error_log("Fetched " . count($assignments) . " assignments from database");
+    file_put_contents(__DIR__ . '/debug_assignments_count.txt', "Assignments found: " . count($assignments) . "\n");
 } catch(PDOException $e) {
     $assignments = [];
+    error_log("Error fetching assignments: " . $e->getMessage());
+    // Also log the full error details
+    file_put_contents(__DIR__ . '/debug_assignments_fetch_error.txt', print_r([
+        'message' => $e->getMessage(),
+        'code' => $e->getCode(),
+        'trace' => $e->getTraceAsString()
+    ], true));
 }
 
 // Get current semester settings
@@ -566,9 +924,9 @@ if (isset($_GET['debug_teacher'])) {
     $stmt = $pdo->prepare("SELECT sa.*, s.subject_code, sec.name as section_name FROM subject_assignments sa JOIN subjects s ON sa.subject_id = s.id JOIN sections sec ON sa.section_id = sec.id WHERE sa.teacher_id = ?");
     $stmt->execute([$teacher_id]);
     $assignments = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    echo '<b>subject_assignments:</b><br><table border=1 cellpadding=4><tr><th>subject_id</th><th>subject_code</th><th>section_id</th><th>section_name</th><th>semester</th><th>term_period</th></tr>';
+    echo '<b>subject_assignments:</b><br><table border=1 cellpadding=4><tr><th>subject_id</th><th>subject_code</th><th>section_id</th><th>section_name</th><th>semester</th></tr>';
     foreach ($assignments as $a) {
-        echo '<tr><td>' . $a['subject_id'] . '</td><td>' . htmlspecialchars($a['subject_code']) . '</td><td>' . $a['section_id'] . '</td><td>' . htmlspecialchars($a['section_name']) . '</td><td>' . htmlspecialchars($a['semester']) . '</td><td>' . htmlspecialchars($a['term_period']) . '</td></tr>';
+        echo '<tr><td>' . $a['subject_id'] . '</td><td>' . htmlspecialchars($a['subject_code']) . '</td><td>' . $a['section_id'] . '</td><td>' . htmlspecialchars($a['section_name']) . '</td><td>' . htmlspecialchars($a['semester'] ?? 'N/A') . '</td></tr>';
     }
     echo '</table>';
     $stmt = $pdo->prepare("SELECT c.*, s.subject_code FROM classes c JOIN subjects s ON c.subject_id = s.id WHERE c.teacher_id = ?");
@@ -696,9 +1054,17 @@ if (isset($_GET['debug_teacher'])) {
                                 </tr>
                             </thead>
                             <tbody>
+                                <?php if (empty($assignments)): ?>
+                                <tr>
+                                    <td colspan="6" class="text-center text-muted py-4">
+                                        <i class="bi bi-inbox" style="font-size: 2rem; display: block; margin-bottom: 0.5rem;"></i>
+                                        No subject assignments found. Please assign subjects to teachers using the "Assign Subject to Teacher" button above.
+                                    </td>
+                                </tr>
+                                <?php else: ?>
                                 <?php foreach ($assignments as $assignment): ?>
                                 <tr>
-                                    <td><?php echo htmlspecialchars($assignment['formatted_teacher_id']); ?></td>
+                                    <td><?php echo htmlspecialchars($assignment['formatted_teacher_id'] ?? 'N/A'); ?></td>
                                     <td><?php 
 $fullName = trim($assignment['teacher_name'] ?? '');
 $displayName = $fullName;
@@ -724,20 +1090,28 @@ if ($fullName) {
 }
                                         echo htmlspecialchars($displayName);
                                     ?></td>
-                                    <td><?php echo htmlspecialchars($assignment['subject_code'] . ' - ' . $assignment['subject_name']); ?></td>
-                                    <td><?php echo htmlspecialchars($assignment['section_name']); ?></td>
-                                    <td><?php echo htmlspecialchars($assignment['year_level']); ?></td>
+                                    <td><?php echo htmlspecialchars(($assignment['subject_code'] ?? '') . ' - ' . ($assignment['subject_name'] ?? '')); ?></td>
+                                    <td><?php echo htmlspecialchars($assignment['section_name'] ?? 'N/A'); ?></td>
+                                    <td><?php echo htmlspecialchars($assignment['year_level'] ?? 'N/A'); ?></td>
                                     <td>
+                                        <?php 
+                                        // Use 'id' if from subject_assignments, or 'assignment_id' if from classes table
+                                        $assignmentId = $assignment['id'] ?? $assignment['assignment_id'] ?? null;
+                                        if ($assignmentId): ?>
                                         <form action="manage_subjects.php" method="post" class="d-inline">
                                             <input type="hidden" name="action" value="remove_assignment">
-                                            <input type="hidden" name="assignment_id" value="<?php echo $assignment['id']; ?>">
+                                            <input type="hidden" name="assignment_id" value="<?php echo htmlspecialchars($assignmentId); ?>">
                                             <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Are you sure you want to remove this assignment?')">
                                                 <i class="bi bi-trash"></i>
                                             </button>
                                         </form>
+                                        <?php else: ?>
+                                        <span class="text-muted small">No action available</span>
+                                        <?php endif; ?>
                                     </td>
                                 </tr>
                                 <?php endforeach; ?>
+                                <?php endif; ?>
                             </tbody>
                         </table>
                     </div>
@@ -754,7 +1128,7 @@ if ($fullName) {
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
-                            <form action="manage_subjects.php" method="post">
+                            <form action="manage_subjects.php" method="post" id="assignSubjectForm">
                                 <input type="hidden" name="action" value="assign_subject">
                                 <div class="mb-3">
                                     <label for="assign_year_level" class="form-label">Year Level</label>
@@ -773,7 +1147,7 @@ if ($fullName) {
                                     </select>
                                 </div>
                                 <div class="mb-3">
-                                    <label class="form-label">Subject</label>
+                                    <label class="form-label">Subject <span class="text-danger">*</span></label>
                                     <div id="assign_subject_buttons" class="d-flex flex-wrap justify-content-center gap-2 subject-btns-2row" style="max-width: 520px; margin: 0 auto;">
                                         <?php foreach ($subjects as $subject): ?>
                                             <span class="subject-btn-wrapper">
@@ -784,6 +1158,8 @@ if ($fullName) {
                                         <?php endforeach; ?>
                                     </div>
                                     <div id="selected_subjects_inputs"></div>
+                                    <small class="text-muted d-block mt-2">Please select at least one subject</small>
+                                    <div id="subject_error" class="text-danger small mt-1" style="display:none;"></div>
                                 </div>
                                 <div class="mb-3">
                                     <label for="assign_teacher_id" class="form-label">Teacher</label>
@@ -795,12 +1171,11 @@ if ($fullName) {
                                     </select>
                                 </div>
                                 <input type="hidden" id="semester" name="semester">
-                                <input type="hidden" id="term_period" name="term_period">
                                 <input type="hidden" id="start_date" name="start_date">
                                 <input type="hidden" id="end_date" name="end_date">
                                 <div class="text-end">
                                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                                    <button type="submit" class="btn btn-secondary">Assign Subject</button>
+                                    <button type="submit" class="btn btn-secondary" id="assignSubjectBtn">Assign Subject</button>
                                 </div>
                             </form>
                         </div>
@@ -996,6 +1371,7 @@ if ($fullName) {
                     <div class="table-responsive">
                         <form id="deleteAllSubjectsForm" action="manage_subjects.php" method="post" style="display:none;">
                             <input type="hidden" name="action" value="delete_all_subjects">
+                            <input type="hidden" name="confirm_delete_all" value="CONFIRM_DELETE_ALL_SUBJECTS">
                         </form>
                             <table class="table table-striped table-sm align-middle" id="allSubjectsTable">
                             <thead>
@@ -1017,10 +1393,10 @@ if ($fullName) {
                                         <td><?php echo htmlspecialchars($subject['units']); ?></td>
                                         <td class="subject-year-level"><?php echo htmlspecialchars($subject['year_level']); ?>st Year</td>
                                         <td>
-                                            <form action="manage_subjects.php" method="post" class="d-inline">
+                                            <form action="manage_subjects.php" method="post" class="d-inline delete-subject-form" id="deleteSubjectForm_<?php echo $subject['id']; ?>">
                                                 <input type="hidden" name="action" value="delete_subject">
-                                                <input type="hidden" name="subject_id" value="<?php echo $subject['id']; ?>">
-                                                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Are you sure you want to delete this subject?')">
+                                                <input type="hidden" name="subject_id" value="<?php echo htmlspecialchars($subject['id']); ?>">
+                                                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Are you sure you want to delete this subject? This will move it to archive.')">
                                                     <i class="bi bi-trash"></i>
                                                 </button>
                                             </form>
@@ -1176,15 +1552,6 @@ if ($fullName) {
                                         <option value="">Select Semester</option>
                                         <option value="1st Semester">1st Semester</option>
                                         <option value="2nd Semester">2nd Semester</option>
-                                    </select>
-                                </div>
-                                <div class="mb-3">
-                                    <label for="term_period" class="form-label">Term Period</label>
-                                    <select class="form-select" id="term_period" name="term_period" required>
-                                        <option value="">Select Term Period</option>
-                                        <option value="Prelim">Prelim</option>
-                                        <option value="Midterm">Midterm</option>
-                                        <option value="Final">Final</option>
                                     </select>
                                 </div>
                             <div class="text-end">
@@ -1392,18 +1759,55 @@ if ($fullName) {
             // Do NOT call updateSections() or filterSubjects() on page load
         });
 
+        // Form validation for assign subject form
+        document.addEventListener('DOMContentLoaded', function() {
+            const assignSubjectForm = document.getElementById('assignSubjectForm');
+            if (assignSubjectForm) {
+                assignSubjectForm.addEventListener('submit', function(e) {
+                    const selectedSubjects = document.querySelectorAll('#selected_subjects_inputs input[name="subject_ids[]"]');
+                    const subjectError = document.getElementById('subject_error');
+                    
+                    if (selectedSubjects.length === 0) {
+                        e.preventDefault();
+                        if (subjectError) {
+                            subjectError.textContent = 'Please select at least one subject.';
+                            subjectError.style.display = 'block';
+                        }
+                        return false;
+                    }
+                    
+                    // Validate that semester and dates are set
+                    const semester = document.getElementById('semester').value;
+                    const startDate = document.getElementById('start_date').value;
+                    const endDate = document.getElementById('end_date').value;
+                    
+                    if (!semester || !startDate || !endDate) {
+                        e.preventDefault();
+                        if (subjectError) {
+                            subjectError.textContent = 'Semester information is missing. Please refresh the page and try again.';
+                            subjectError.style.display = 'block';
+                        }
+                        return false;
+                    }
+                    
+                    // Clear error if validation passes
+                    if (subjectError) {
+                        subjectError.style.display = 'none';
+                    }
+                });
+            }
+        });
+
         // Auto-fill semester details from current settings when assigning subject
         <?php if ($current_semester): ?>
         document.addEventListener('DOMContentLoaded', function() {
             const assignModal = document.getElementById('assignSubjectModal');
             assignModal.addEventListener('show.bs.modal', function() {
                 const semesterSelect = document.getElementById('semester');
-                const termPeriodSelect = document.getElementById('term_period');
                 const startDateInput = document.getElementById('start_date');
                 const endDateInput = document.getElementById('end_date');
 
                 semesterSelect.value = <?php echo json_encode($current_semester ? $current_semester['semester'] : ''); ?>;
-                if (termPeriodSelect) termPeriodSelect.value = '';
                 startDateInput.value = <?php echo json_encode($current_semester ? $current_semester['start_date'] : ''); ?>;
                 endDateInput.value = <?php echo json_encode($current_semester ? $current_semester['end_date'] : ''); ?>;
                 
@@ -1411,6 +1815,7 @@ if ($fullName) {
                 const yearLevelSelect = document.getElementById('assign_year_level');
                 const sectionSelect = document.getElementById('assign_section_id');
                 const teacherSelect = document.getElementById('assign_teacher_id');
+                const subjectError = document.getElementById('subject_error');
                 
                 if (yearLevelSelect) {
                     yearLevelSelect.selectedIndex = 0;
@@ -1430,6 +1835,12 @@ if ($fullName) {
                 // Clear selected subjects inputs
                 const selectedSubjectsInputs = document.getElementById('selected_subjects_inputs');
                 if (selectedSubjectsInputs) selectedSubjectsInputs.innerHTML = '';
+                
+                // Clear error message
+                if (subjectError) {
+                    subjectError.style.display = 'none';
+                    subjectError.textContent = '';
+                }
             });
         });
         <?php endif; ?>

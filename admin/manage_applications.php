@@ -38,39 +38,79 @@ if (isset($_POST['action']) && $_POST['action'] === 'approve' && isset($_POST['s
             $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
             
             // --- Automatic Section Assignment Logic ---
+            // Section capacity (maximum students per section)
+            $sectionCapacity = 5;
+            
             $yearLevel = $student['year_level'];
             $courseCode = $student['course'];
+            
             // Get course_id
             $stmtCourse = $pdo->prepare("SELECT id FROM courses WHERE code = ? LIMIT 1");
             $stmtCourse->execute([$courseCode]);
             $courseId = $stmtCourse->fetchColumn();
-            // Find all sections for this year level and course
+            
+            if (!$courseId) {
+                throw new Exception("Course not found for code: {$courseCode}");
+            }
+            
+            // STEP 1: Ensure Section A exists for this year level and course
+            $stmtCheckA = $pdo->prepare("SELECT id, name FROM sections WHERE year_level = ? AND course_id = ? AND name = 'A' LIMIT 1");
+            $stmtCheckA->execute([$yearLevel, $courseId]);
+            $sectionA = $stmtCheckA->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$sectionA) {
+                // Section A doesn't exist, create it
+                $stmtAddA = $pdo->prepare("INSERT INTO sections (name, course_id, year_level) VALUES ('A', ?, ?)");
+                $stmtAddA->execute([$courseId, $yearLevel]);
+                $sectionA = ['id' => $pdo->lastInsertId(), 'name' => 'A'];
+            }
+            
+            // STEP 2: Get all sections for this year level and course, ordered alphabetically (A, B, C, ...)
             $stmtSections = $pdo->prepare("SELECT id, name FROM sections WHERE year_level = ? AND course_id = ? ORDER BY name ASC");
             $stmtSections->execute([$yearLevel, $courseId]);
             $sections = $stmtSections->fetchAll(PDO::FETCH_ASSOC);
+            
+            // STEP 3: Check for vacancies in existing sections (in order: A, B, C, ...)
             $assignedSection = null;
             foreach ($sections as $section) {
-                $stmtCount = $pdo->prepare("SELECT COUNT(*) FROM students WHERE section = ? AND is_deleted = 0");
-                $stmtCount->execute([$section['name']]);
+                // Count approved students in this section (excluding deleted)
+                $stmtCount = $pdo->prepare("SELECT COUNT(*) FROM students WHERE section = ? AND year_level = ? AND status = 'approved' AND is_deleted = 0");
+                $stmtCount->execute([$section['name'], $yearLevel]);
                 $studentCount = $stmtCount->fetchColumn();
-                if ($studentCount < 5) {
+                
+                // If section has vacancy, assign student here
+                if ($studentCount < $sectionCapacity) {
                     $assignedSection = $section['name'];
-                    break;
+                    error_log("Assigned student to Section {$assignedSection} (Current: {$studentCount}/{$sectionCapacity})");
+                    break; // Found a section with vacancy, stop searching
                 }
             }
+            
+            // STEP 4: If all existing sections are full, create next section (B, C, D, etc.)
             if (!$assignedSection) {
-                // All sections full, create new section with next available letter
-                $sectionLetters = array_merge(['A','B','C','D','E'], range('F', 'Z'));
+                // All existing sections are full, create next section
+                $sectionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
                 $existingNames = array_map(function($s) { return $s['name']; }, $sections);
+                
+                // Find next available letter (should be the next after the last existing section)
+                $nextLetter = null;
                 foreach ($sectionLetters as $letter) {
                     if (!in_array($letter, $existingNames)) {
-                        // Create new section
-                        $stmtAdd = $pdo->prepare("INSERT INTO sections (name, course_id, year_level) VALUES (?, ?, ?)");
-                        $stmtAdd->execute([$letter, $courseId, $yearLevel]);
-                        $assignedSection = $letter;
+                        $nextLetter = $letter;
                         break;
                     }
                 }
+                
+                // If all letters A-Z are used, append number (A1, A2, etc.) - though this is unlikely
+                if (!$nextLetter) {
+                    $nextLetter = 'A1'; // Fallback
+                }
+                
+                // Create new section
+                $stmtAdd = $pdo->prepare("INSERT INTO sections (name, course_id, year_level) VALUES (?, ?, ?)");
+                $stmtAdd->execute([$nextLetter, $courseId, $yearLevel]);
+                $assignedSection = $nextLetter;
+                error_log("Created new Section {$assignedSection} for Year {$yearLevel}, Course ID {$courseId}");
             }
             // Update student record with credentials and assigned section
             $stmt = $pdo->prepare("
@@ -81,8 +121,8 @@ if (isset($_POST['action']) && $_POST['action'] === 'approve' && isset($_POST['s
             $stmt->execute([$hashedPassword, $assignedSection, $_POST['student_id']]);
             
             // Backup student approval to Firebase
+            $backupHooks = new BackupHooks();
             try {
-                $backupHooks = new BackupHooks();
                 $updatedData = [
                     'status' => 'approved',
                     'section' => $assignedSection,
@@ -95,20 +135,44 @@ if (isset($_POST['action']) && $_POST['action'] === 'approve' && isset($_POST['s
             }
             // --- End Section Assignment ---
             
-            // Get all active classes for the student's section
-            $stmt = $pdo->prepare("SELECT id FROM classes WHERE section = ? AND status = 'active'");
-            $stmt->execute([$assignedSection]);
+            // Get all active classes for the student's section AND year_level
+            $stmt = $pdo->prepare("SELECT id FROM classes WHERE section = ? AND year_level = ? AND status = 'active'");
+            $stmt->execute([$assignedSection, $yearLevel]);
             $classes = $stmt->fetchAll(PDO::FETCH_COLUMN);
             
-            // Enroll student in all classes for their section
+            error_log("Found " . count($classes) . " classes for section: {$assignedSection}, year_level: {$yearLevel}");
+            
+            // Enroll student in all classes for their section and year_level
             foreach ($classes as $class_id) {
-                $stmt = $pdo->prepare("
-                    INSERT INTO class_students (class_id, student_id, status) 
-                    VALUES (?, ?, 'active')
-                    ON DUPLICATE KEY UPDATE status = 'active'
-                ");
-                $stmt->execute([$class_id, $_POST['student_id']]);
+                try {
+                    $enrollStmt = $pdo->prepare("
+                        INSERT INTO class_students (class_id, student_id, status) 
+                        VALUES (?, ?, 'active')
+                        ON DUPLICATE KEY UPDATE status = 'active'
+                    ");
+                    $enrollStmt->execute([$class_id, $_POST['student_id']]);
+                    
+                    // Backup enrollment to Firebase
+                    try {
+                        $enrollmentData = [
+                            'class_id' => (string)$class_id,
+                            'student_id' => (string)$_POST['student_id'],
+                            'status' => 'active',
+                            'enrolled_at' => date('Y-m-d H:i:s')
+                        ];
+                        $backupHooks->backupClassEnrollment($enrollmentData);
+                        error_log("Backed up enrollment to Firebase: class_id={$class_id}, student_id={$_POST['student_id']}");
+                    } catch (Exception $e) {
+                        error_log("Firebase backup failed for enrollment: " . $e->getMessage());
+                        // Don't fail enrollment if backup fails
+                    }
+                } catch (PDOException $e) {
+                    error_log("Error enrolling student in class {$class_id}: " . $e->getMessage());
+                    // Continue with next class even if one fails
+                }
             }
+            
+            error_log("Enrolled student {$_POST['student_id']} in " . count($classes) . " classes");
             
             // Send email with credentials
             $emailVerification = new EmailVerification();

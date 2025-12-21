@@ -75,6 +75,22 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $_SESSION['user_id']
             ]);
 
+            // Backup profile update to Firebase (including avatar conversion to base64)
+            try {
+                $backupHooks = new BackupHooks();
+                // backupTeacherUpdate will handle avatar conversion to base64 automatically
+                $updatedData = [
+                    'full_name' => $_POST['full_name'],
+                    'email' => $_POST['email']
+                ];
+                if (!empty($avatar_path)) {
+                    $updatedData['avatar'] = $avatar_path; // Will be converted to base64 in backupTeacherUpdate
+                }
+                $backupHooks->backupTeacherUpdate($_SESSION['user_id'], $updatedData);
+            } catch (Exception $e) {
+                error_log("Firebase backup failed for teacher profile update: " . $e->getMessage());
+            }
+
             // Update password if provided
             if (!empty($_POST['new_password'])) {
                 // Get current password from database

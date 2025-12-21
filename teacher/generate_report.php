@@ -9,15 +9,13 @@ if (!isset($_SESSION['user_id']) || $_SESSION['user_type'] !== 'teacher') {
 }
 
 // Get parameters (POST first, then GET as fallback)
-$section = $_POST['section'] ?? $_GET['section'] ?? '';
-$subject = $_POST['subject'] ?? $_GET['subject'] ?? '';
-$semester = $_POST['semester'] ?? $_GET['semester'] ?? '';
-$term = $_POST['term'] ?? $_GET['term'] ?? '';
-$date_range = $_POST['date_range'] ?? $_GET['date_range'] ?? '';
-$format = $_POST['format'] ?? $_GET['format'] ?? 'pdf';
+$class_id = $_POST['class_id'] ?? $_GET['class_id'] ?? '';
+$format = $_POST['report_format'] ?? $_POST['format'] ?? $_GET['format'] ?? 'pdf';
 $teacher_id = $_SESSION['user_id'] ?? '';
-$custom_start = $_POST['custom_start'] ?? $_GET['custom_start'] ?? '';
-$custom_end = $_POST['custom_end'] ?? $_GET['custom_end'] ?? '';
+
+if (empty($class_id) || empty($teacher_id)) {
+    die("Missing parameters. Please select a class.");
+}
 
 // Fetch current semester settings
 try {
@@ -36,28 +34,35 @@ if (!empty($teacher_id)) {
     $teacher_name = $teacher_row ? $teacher_row['full_name'] : '';
 }
 
-// Fetch year level for the selected class/section/subject
-$year_level = '';
+// Fetch class details for the selected class_id
 $stmt = $pdo->prepare("
-    SELECT s.year_level 
+    SELECT 
+        c.id as class_id,
+        c.section,
+        s.subject_code,
+        s.subject_name,
+        s.year_level,
+        CONCAT(s.subject_code, ' - ', c.section, ' (', s.year_level, 'st Year)') as class_desc
     FROM classes c
     JOIN subjects s ON c.subject_id = s.id
-    WHERE TRIM(LOWER(c.section)) = TRIM(LOWER(?)) 
-      AND TRIM(LOWER(s.subject_name)) = TRIM(LOWER(?)) 
-      AND c.teacher_id = ?
+    WHERE c.id = ? AND c.teacher_id = ? AND c.status = 'active'
     LIMIT 1
 ");
-$stmt->execute([$section, $subject, $teacher_id]);
-$year_level = $stmt->fetchColumn();
+$stmt->execute([$class_id, $teacher_id]);
+$class_info = $stmt->fetch(PDO::FETCH_ASSOC);
 
-if (empty($section) || empty($subject) || empty($teacher_id)) {
-    die("Missing parameters. Please select all required fields.");
-}
-if ($term === false || $term === null) {
-    die("No class found for the selected section, subject, and teacher. Please check your class assignments.");
+if (!$class_info) {
+    die("Class not found or you don't have permission to access this class.");
 }
 
-// Fetch attendance data
+$section = $class_info['section'];
+$subject = $class_info['subject_name'];
+$year_level = $class_info['year_level'];
+$subject_code = $class_info['subject_code'];
+
+// Fetch attendance data - filter by specific class_id only (only students enrolled in this class)
+// Start from class_students to ensure we ONLY get students enrolled in this specific class
+// Also filter by student's section and year_level to match the class requirements
 $query = "
     SELECT 
         s.student_id,
@@ -66,26 +71,32 @@ $query = "
         COUNT(CASE WHEN a.status = 'absent' THEN 1 END) as absent_count,
         COUNT(CASE WHEN a.status = 'late' THEN 1 END) as late_count,
         COUNT(DISTINCT a.date) as total_classes
-    FROM students s
-    JOIN class_students cs ON s.id = cs.student_id
-    JOIN classes c ON cs.class_id = c.id
+    FROM class_students cs
+    INNER JOIN students s ON cs.student_id = s.id
+    INNER JOIN classes c ON cs.class_id = c.id
+    INNER JOIN subjects sub ON c.subject_id = sub.id
     LEFT JOIN attendance a ON s.id = a.student_id 
-        AND c.id = a.class_id
+        AND a.class_id = cs.class_id
         AND a.date BETWEEN ? AND ?
-    WHERE c.section = ? 
-    AND c.subject_id IN (SELECT id FROM subjects WHERE subject_name = ?)
-    AND c.teacher_id = ?
+    WHERE cs.class_id = ?
+    AND cs.status = 'active'
+    AND s.section = c.section
+    AND s.year_level = sub.year_level
+    AND s.is_deleted = 0
+    AND s.status NOT IN ('graduated', 'promoted', 'dropped')
     GROUP BY s.student_id, s.last_name, s.first_name, s.middle_name
     ORDER BY s.last_name, s.first_name
 ";
 
+// Determine date range for the query
+$start_date = $current_semester ? $current_semester['start_date'] : date('Y-m-01'); // Default to start of current month
+$end_date = $current_semester ? $current_semester['end_date'] : date('Y-m-t'); // Default to end of current month
+
 $stmt = $pdo->prepare($query);
 $stmt->execute([
-    $current_semester['start_date'],
-    $current_semester['end_date'],
-    $section,
-    $subject,
-    $teacher_id
+    $start_date,
+    $end_date,
+    $class_id
 ]);
 $attendance_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -100,32 +111,8 @@ if ($format === 'pdf') {
 
 $ajax = isset($_POST['ajax']) || isset($_GET['ajax']);
 
-// Parse and display date range
-function getDateRangeText($date_range) {
-    if (!$date_range) return '';
-    $today = date('Y-m-d');
-    $firstOfMonth = date('Y-m-01');
-    $lastOfMonth = date('Y-m-t');
-    $weekStart = date('Y-m-d', strtotime('monday this week'));
-    $weekEnd = date('Y-m-d', strtotime('sunday this week'));
-    if ($date_range === 'today') {
-        return 'Date Range: ' . date('F j, Y');
-    } elseif ($date_range === 'this_week') {
-        return 'Date Range: ' . date('F j, Y', strtotime($weekStart)) . ' – ' . date('F j, Y', strtotime($weekEnd));
-    } elseif ($date_range === 'this_month') {
-        return 'Date Range: ' . date('F j, Y', strtotime($firstOfMonth)) . ' – ' . date('F j, Y', strtotime($lastOfMonth));
-    } elseif (strpos($date_range, ' to ') !== false) {
-        list($start, $end) = explode(' to ', $date_range);
-        return 'Date Range: ' . date('F j, Y', strtotime($start)) . ' – ' . date('F j, Y', strtotime($end));
-    }
-    return '';
-}
-
-if ($custom_start && $custom_end) {
-    $date_range_text = 'Date Range: ' . date('F j, Y', strtotime($custom_start)) . ' – ' . date('F j, Y', strtotime($custom_end));
-} else {
-    $date_range_text = getDateRangeText(strtolower($date_range));
-}
+// Date range text is not needed for attendance reports - using semester dates
+$date_range_text = '';
 
 date_default_timezone_set('Asia/Manila');
 $generated_on = date('F j, Y g:i A');
@@ -335,7 +322,6 @@ if ($format === 'excel' && !$ajax) {
             <span><strong>Year Level / Section:</strong> <?php echo htmlspecialchars($year_level) . ' - ' . htmlspecialchars($section); ?></span>
             <span><strong>Subject:</strong> <?php echo htmlspecialchars($subject); ?></span>
             <span><strong>Teacher:</strong> <?php echo htmlspecialchars($teacher_name); ?></span>
-            <span><strong>Term:</strong> <?php echo htmlspecialchars($term); ?></span>
         </div>
         <div class="generated-on"><strong>Generated on:</strong> <?php echo $generated_on; ?></div>
     </div>

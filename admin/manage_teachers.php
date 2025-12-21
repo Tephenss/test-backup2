@@ -139,6 +139,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
                 if (empty($errors)) {
                     try {
+                        // Ensure AUTO_INCREMENT is enabled on teachers table
+                        try {
+                            $checkAutoInc = $pdo->query("SHOW COLUMNS FROM teachers WHERE Field = 'id'");
+                            $columnInfo = $checkAutoInc->fetch(PDO::FETCH_ASSOC);
+                            if ($columnInfo && strpos($columnInfo['Extra'], 'auto_increment') === false) {
+                                // Get max ID and set AUTO_INCREMENT
+                                $maxIdStmt = $pdo->query("SELECT COALESCE(MAX(id), 0) as max_id FROM teachers");
+                                $maxId = $maxIdStmt->fetchColumn();
+                                $nextId = $maxId + 1;
+                                $pdo->exec("ALTER TABLE teachers MODIFY id INT(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT = $nextId");
+                            }
+                        } catch (PDOException $e) {
+                            error_log("AUTO_INCREMENT check failed: " . $e->getMessage());
+                        }
+                        
                         $username = $email; // Use email as username
                         $password = $birthDate; // Use birthdate as password
                         $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
@@ -148,6 +163,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $stmt = $pdo->prepare("INSERT INTO teachers (full_name, sex, civil_status, birth_date, phone_number, course, email, password, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())");
                         $stmt->execute([$fullName, $sex, $civilStatus, $birthDate, $phoneNumber, $course, $email, $hashedPassword]);
                         $newTeacherId = $pdo->lastInsertId();
+                        
+                        // If lastInsertId returns 0, manually get the ID
+                        if (!$newTeacherId || $newTeacherId == 0) {
+                            $getIdStmt = $pdo->query("SELECT MAX(id) as max_id FROM teachers");
+                            $newTeacherId = $getIdStmt->fetchColumn();
+                        }
 
                         // Generate Teacher ID (T + zero-padded id)
                         $teacherIdFormatted = 'T' . str_pad($newTeacherId, 4, '0', STR_PAD_LEFT);

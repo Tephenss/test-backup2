@@ -1,4 +1,7 @@
 <?php
+// Set timezone to Asia/Manila (Philippines)
+date_default_timezone_set('Asia/Manila');
+
 // Database configuration
 $host = 'localhost';
 $dbname = 'attendance_system';
@@ -13,6 +16,8 @@ try {
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
     // Set character set to utf8mb4
     $pdo->exec("SET NAMES utf8mb4");
+    // Set MySQL timezone to match PHP timezone
+    $pdo->exec("SET time_zone = '+08:00'");
 } catch(PDOException $e) {
     // Log the error and show a user-friendly message
     error_log("Database Connection Error: " . $e->getMessage());

@@ -11,7 +11,9 @@ if (!isset($_SESSION['user_id']) || $_SESSION['user_type'] !== 'admin') {
 
 ensureRfidInfrastructure($pdo);
 
-$rfidTags = fetchRfidTags($pdo);
+// Skip sync on initial page load to prevent re-adding deleted tags
+// Sync will happen on refresh button click or after actions
+$rfidTags = fetchRfidTags($pdo, true);
 $rfidStats = getRfidStats($pdo);
 $availableTags = getAvailableRfidTags($pdo);
 $firebaseConfig = require '../config/firebase.php';
@@ -150,18 +152,8 @@ $scannerUrl = $firebaseBaseUrl . '/' . $scannerPath . '.json';
                     <div class="card shadow-sm h-100">
                         <div class="card-header bg-white border-0 pb-0">
                             <h5 class="mb-1">Live RFID Registration</h5>
-                            <p class="text-muted small mb-0">
-                                Ensure your Arduino writes the latest tag payload to
-                                <code><?php echo htmlspecialchars($scannerPath); ?></code> inside Firebase Realtime Database.
-                            </p>
                         </div>
                         <div class="card-body">
-                            <div class="alert alert-info small mb-3">
-                                <strong><i class="bi bi-info-circle me-1"></i>Arduino Setup:</strong><br>
-                                Ang Arduino mo dapat mag-write sa Firebase path:<br>
-                                <code class="d-block mt-1"><?php echo htmlspecialchars($scannerPath); ?></code>
-                                <small class="text-muted d-block mt-1">Format: <code>{"uid": "ABC123", "timestamp": 1234567890}</code></small>
-                            </div>
                             <div class="d-flex align-items-center justify-content-between mb-3">
                                 <span class="text-muted">Scanner Status</span>
                                 <span class="live-status-pill bg-light text-secondary" id="listeningStatus">
@@ -181,26 +173,20 @@ $scannerUrl = $firebaseBaseUrl . '/' . $scannerPath . '.json';
                                     <i class="bi bi-wifi"></i>
                                 </button>
                             </div>
-                            <div class="mb-2">
-                                <small class="text-muted">
-                                    Firebase Path: <code><?php echo htmlspecialchars($scannerPath); ?></code><br>
-                                    Full URL: <code class="small"><?php echo htmlspecialchars($scannerUrl); ?></code>
-                                </small>
-                            </div>
 
                             <div class="mb-3">
                                 <label class="form-label">Captured UID</label>
                                 <div class="input-group">
                                     <span class="input-group-text"><i class="bi bi-nfc"></i></span>
-                                    <input type="text" class="form-control" id="capturedRfidInput" placeholder="Maghintay ng RFID scan..." readonly>
+                                    <input type="text" class="form-control" id="capturedRfidInput" placeholder="Waiting for RFID scan..." readonly>
                                 </div>
-                                <div class="small text-muted mt-1" id="scanMeta">Walang scan pa. I-click ang "Start Listening" at i-tap ang RFID card.</div>
+                                <div class="small text-muted mt-1" id="scanMeta">No scan yet. Click "Start Listening" and tap the RFID card.</div>
                             </div>
 
                             <div class="mb-3">
                                 <label class="form-label">Manual Entry (Optional)</label>
-                                <input type="text" class="form-control" id="manualRfidInput" placeholder="I-type ang UID kung offline ang scanner">
-                                <small class="text-muted">Puwede ring i-type manually ang UID kung hindi gumagana ang live scanner.</small>
+                                <input type="text" class="form-control" id="manualRfidInput" placeholder="Type the UID if the scanner is offline">
+                                <small class="text-muted">You can also type the UID manually if the live scanner is not working.</small>
                             </div>
 
                             <div class="d-flex flex-column flex-sm-row gap-2">
@@ -276,13 +262,31 @@ $scannerUrl = $firebaseBaseUrl . '/' . $scannerPath . '.json';
                     <h5 class="mb-0">Registered RFID Tags</h5>
                     <div class="text-muted small">Realtime data pulled from MySQL + Firebase sync.</div>
                 </div>
+                <div class="card-body border-bottom">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label small text-muted">Search by Student Name or Student ID</label>
+                            <div class="input-group">
+                                <span class="input-group-text"><i class="bi bi-search"></i></span>
+                                <input type="text" class="form-control" id="rfidSearchInput" placeholder="Type student name or ID to search...">
+                                <button class="btn btn-outline-secondary" type="button" id="clearSearchBtn">
+                                    <i class="bi bi-x"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="col-md-6 d-flex align-items-end">
+                            <div class="text-muted small">
+                                <span id="searchResultCount"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <div class="table-responsive">
                     <table class="table table-hover align-middle mb-0">
                         <thead class="table-light">
                             <tr>
                                 <th>#</th>
                                 <th>Tag UID</th>
-                                <th>Label</th>
                                 <th>Student</th>
                                 <th>Status</th>
                                 <th>Last Seen</th>
@@ -293,7 +297,7 @@ $scannerUrl = $firebaseBaseUrl . '/' . $scannerPath . '.json';
                         <tbody id="rfidTagsTableBody">
                             <?php if (empty($rfidTags)): ?>
                                 <tr>
-                                    <td colspan="8" class="text-center text-muted py-4">No RFID tags registered yet.</td>
+                                    <td colspan="7" class="text-center text-muted py-4">No RFID tags registered yet.</td>
                                 </tr>
                             <?php else: ?>
                                 <?php foreach ($rfidTags as $tag): ?>
@@ -301,9 +305,6 @@ $scannerUrl = $firebaseBaseUrl . '/' . $scannerPath . '.json';
                                         <td><?php echo $tag['id']; ?></td>
                                         <td>
                                             <span class="fw-semibold"><?php echo htmlspecialchars($tag['tag_uid']); ?></span>
-                                        </td>
-                                        <td>
-                                            <?php echo $tag['label'] ? htmlspecialchars($tag['label']) : '&mdash;'; ?>
                                         </td>
                                         <td>
                                             <?php if ($tag['student_id']): ?>
@@ -328,13 +329,9 @@ $scannerUrl = $firebaseBaseUrl . '/' . $scannerPath . '.json';
                                         </td>
                                         <td><?php echo htmlspecialchars($tag['created_at']); ?></td>
                                         <td class="text-end rfid-table-actions">
-                                            <?php if ($tag['student_id']): ?>
-                                                <button class="btn btn-sm btn-outline-danger" data-action="unassign" data-tag-id="<?php echo $tag['id']; ?>">
-                                                    <i class="bi bi-x-circle me-1"></i>Unassign
-                                                </button>
-                                            <?php else: ?>
-                                                <span class="text-muted">&mdash;</span>
-                                            <?php endif; ?>
+                                            <button class="btn btn-sm btn-outline-danger" data-action="block" data-tag-id="<?php echo $tag['id']; ?>">
+                                                <i class="bi bi-ban me-1"></i>Block
+                                            </button>
                                         </td>
                                     </tr>
                                 <?php endforeach; ?>

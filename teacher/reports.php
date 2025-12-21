@@ -56,20 +56,20 @@ if (!empty($user['first_name']) && !empty($user['last_name'])) {
     $shortName = htmlspecialchars($user['full_name'] ?? '');
 }
 
+// Fetch classes directly from classes table where teacher_id matches
+// Similar to manage_timetable.php approach
 $stmt = $pdo->prepare("
-    SELECT c.id,
+    SELECT DISTINCT c.id,
            s.subject_code,
            s.year_level,
            c.section,
            CONCAT(s.subject_code, '-', s.year_level, c.section) as class_name,
            CONCAT(s.subject_code, ' - ', c.section, ' (', s.year_level, 'st Year)') as class_desc
     FROM classes c
-    JOIN subjects s ON c.subject_id = s.id
-    JOIN sections sec ON c.section = sec.name
-    JOIN subject_assignments sa ON sa.teacher_id = c.teacher_id 
-        AND sa.subject_id = c.subject_id 
-        AND sa.section_id = sec.id
-    WHERE c.teacher_id = ? AND c.status = 'active'
+    INNER JOIN subjects s ON c.subject_id = s.id
+    WHERE c.teacher_id = ? 
+      AND c.status = 'active'
+      AND s.is_deleted = 0
     ORDER BY s.subject_code, c.section
 ");
 $stmt->execute([$_SESSION['user_id']]);
@@ -313,28 +313,22 @@ $available_classes = $stmt->fetchAll(PDO::FETCH_ASSOC);
                     <form method="POST" action="reports.php">
                         <input type="hidden" name="report_type" value="attendance">
                         <div class="mb-3">
-                            <label for="section" class="form-label">Select Section</label>
-                            <select class="form-select" id="section" name="section" required>
-                                <option value="" selected disabled>Select section...</option>
-                                <?php foreach ($sections as $section): ?>
-                                    <option value="<?php echo htmlspecialchars($section); ?>"><?php echo htmlspecialchars($section); ?></option>
+                            <label for="class_id" class="form-label">Select Class</label>
+                            <select class="form-select" id="class_id" name="class_id" required>
+                                <option value="" selected disabled>Select class...</option>
+                                <?php foreach ($available_classes as $class): ?>
+                                    <option value="<?php echo htmlspecialchars($class['id']); ?>"><?php echo htmlspecialchars($class['class_desc']); ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
                         <div class="mb-3">
-                            <label for="subject" class="form-label">Select Subject</label>
-                            <select class="form-select" id="subject" name="subject" required>
-                                <option value="" selected disabled>Select subject...</option>
-                                <?php foreach ($subjects as $subject): ?>
-                                    <option value="<?php echo htmlspecialchars($subject); ?>"><?php echo htmlspecialchars($subject); ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="mb-3">
-                            <label for="report_format" class="form-label">Report Format</label>
-                            <select class="form-select" id="report_format" name="report_format">
-                                <option value="pdf">PDF</option>
-                            </select>
+                            <label class="form-label">Report Format</label>
+                            <div>
+                                <span class="badge bg-danger fs-6 px-3 py-2">
+                                    <i class="bi bi-file-pdf me-1"></i>PDF
+                                </span>
+                            </div>
+                            <input type="hidden" id="report_format" name="report_format" value="pdf">
                         </div>
                         <div class="d-flex justify-content-end gap-2">
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -415,8 +409,12 @@ $available_classes = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         function pollSidebarUnreadBadge() {
             fetch('teacher_unread_count.php')
-                .then(r => r.json())
+                .then(r => {
+                    if (!r.ok) return null;
+                    return r.json();
+                })
                 .then(data => {
+                    if (!data) return;
                     const badge = document.getElementById('sidebar-unread-badge');
                     if (badge) {
                         if (data.unread > 0) {
@@ -426,6 +424,9 @@ $available_classes = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             badge.style.display = 'none';
                         }
                     }
+                })
+                .catch(err => {
+                    // Silently handle errors
                 });
         }
         setInterval(pollSidebarUnreadBadge, 2000);

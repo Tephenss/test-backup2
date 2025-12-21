@@ -21,9 +21,10 @@ body {
     margin-right: 20px;
     background: #fff;
     text-align: center;
-    padding: 40px 60px;
+    padding: 50px 60px 40px 60px;
     border-radius: 10px;
     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    overflow: visible; /* Allow labels to be visible */
 }
 
 .login-container h2 {
@@ -89,14 +90,32 @@ body {
 .input__container {
     position: relative;
     background: #fff;
-    padding: 15px;
+    padding: 20px 15px 15px 15px;
     display: flex;
     align-items: center;
     gap: 15px;
     border: 1px solid #ddd;
     width: 100%;
     margin-bottom: 25px;
+    margin-top: 8px;
     transition: all 0.3s ease;
+    overflow: visible; /* Allow label to be visible outside container */
+}
+
+/* Hide all browser default password reveal buttons */
+.input__container input[type="password"]::-webkit-credentials-auto-fill-button {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
+.input__container input[type="password"]::-ms-reveal {
+    display: none !important;
+}
+
+.input__container input[type="password"]::-ms-clear {
+    display: none !important;
 }
 
 .input__container:hover {
@@ -106,16 +125,19 @@ body {
 .input__container::before {
     content: attr(data-label);
     position: absolute;
-    top: -10px;
-    left: 10px;
+    top: -12px;
+    left: 12px;
     background: #00b341;
     color: #fff;
     font-weight: bold;
-    padding: 2px 8px;
-    font-size: 12px;
-    z-index: 1;
-    border-radius: 2px;
+    padding: 4px 12px;
+    font-size: 11px;
+    z-index: 10;
+    border-radius: 3px;
     text-transform: uppercase;
+    white-space: nowrap;
+    min-width: fit-content;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .input__search {
@@ -123,10 +145,32 @@ body {
     outline: none;
     border: none;
     padding: 8px;
+    padding-right: 45px; /* Add space for password toggle */
     font-size: 16px;
     background: transparent;
     color: #000;
     font-family: "Roboto", Arial, sans-serif;
+}
+
+/* Hide ALL browser default password reveal buttons */
+.input__search[type="password"]::-webkit-credentials-auto-fill-button {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    position: absolute;
+    right: -9999px;
+}
+
+.input__search[type="password"]::-webkit-textfield-decoration-container {
+    display: none !important;
+}
+
+/* Hide Edge/IE password reveal button */
+.input__search[type="password"]::-ms-reveal,
+.input__search[type="password"]::-ms-clear {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
 }
 
 .input__search::placeholder {
@@ -135,22 +179,31 @@ body {
     text-transform: uppercase;
 }
 
-/* Password Toggle Styles */
+/* Password Toggle Styles - Only ONE eye icon */
 .password-toggle {
     position: absolute;
-    right: 15px;
+    right: 12px !important;
     top: 50%;
     transform: translateY(-50%);
     cursor: pointer;
     color: #6c757d;
     transition: color 0.2s;
-    z-index: 9999;
-    display: flex;
+    z-index: 100;
+    display: flex !important;
     align-items: center;
     justify-content: center;
-    padding: 5px;
-    background: rgba(255, 255, 255, 0.8);
-    border-radius: 3px;
+    padding: 6px;
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 4px;
+    width: 28px;
+    height: 28px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    pointer-events: auto;
+}
+
+/* Ensure no duplicates */
+.input__container .password-toggle ~ .password-toggle {
+    display: none !important;
 }
 
 .password-toggle:hover {

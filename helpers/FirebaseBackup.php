@@ -101,6 +101,28 @@ class FirebaseBackup {
      */
     private function findExistingRecord($table, $userId) {
         try {
+            // For teachers, check the consistent key format first
+            if ($table === 'teachers' && $userId) {
+                $consistentKey = "teachers_{$userId}";
+                $url = $this->config['database_url'] . 'attendance_system/' . $table . '/' . $consistentKey . '.json';
+                
+                $context = stream_context_create([
+                    'ssl' => [
+                        'verify_peer' => false,
+                        'verify_peer_name' => false
+                    ]
+                ]);
+                
+                $response = file_get_contents($url, false, $context);
+                if ($response !== false && $response !== 'null') {
+                    $record = json_decode($response, true);
+                    if ($record && isset($record['data']['id']) && $record['data']['id'] == $userId) {
+                        return $consistentKey;
+                    }
+                }
+            }
+            
+            // Fallback: search through all records
             $url = $this->config['database_url'] . 'attendance_system/' . $table . '.json';
             
             $context = stream_context_create([
@@ -175,8 +197,41 @@ class FirebaseBackup {
                 'server_time' => time()
             ];
             
-            // Generate key based on operation type
-            if (in_array($operation, ['password_change', 'account_recovery', 'update', 'approve'])) {
+            // Generate key based on table type
+            // For attendance: use consistent key (class_id + student_id + date + timetable_id if exists) to allow updates
+            // IMPORTANT: Include timetable_id (session ID) in key to ensure separate records per session
+            if ($table === 'attendance') {
+                $classId = $data['class_id'] ?? '';
+                $studentId = $data['student_id'] ?? '';
+                $date = isset($data['date']) ? str_replace('-', '', $data['date']) : date('Ymd');
+                $timetableId = $data['timetable_id'] ?? null;
+                
+                // Consistent key: attendance_classId_studentId_date (without session) OR attendance_classId_studentId_date_sessionId (with session)
+                // This ensures each session has its own independent attendance record
+                if ($timetableId !== null && $timetableId !== '') {
+                    $backupKey = "attendance_{$classId}_{$studentId}_{$date}_{$timetableId}";
+                } else {
+                    $backupKey = "attendance_{$classId}_{$studentId}_{$date}";
+                }
+            } elseif ($table === 'announcements') {
+                // For announcements: use consistent key based on ID for updates/deletes
+                $announcementId = $data['id'] ?? '';
+                $backupKey = "announcements_{$announcementId}";
+            } elseif ($table === 'teachers') {
+                // For teachers: use consistent key based on ID for easier lookup
+                $teacherId = $data['id'] ?? '';
+                if ($teacherId) {
+                    $backupKey = "teachers_{$teacherId}";
+                } else {
+                    // Fallback for inserts without ID yet
+                    $existingKey = $this->findExistingRecord($table, $data['id'] ?? null);
+                    if ($existingKey) {
+                        $backupKey = $existingKey;
+                    } else {
+                        $backupKey = $table . '_' . uniqid() . '_' . time();
+                    }
+                }
+            } elseif (in_array($operation, ['password_change', 'account_recovery', 'update', 'approve'])) {
                 // For updates, try to find existing record first
                 $existingKey = $this->findExistingRecord($table, $data['id'] ?? null);
                 if ($existingKey) {
@@ -187,7 +242,7 @@ class FirebaseBackup {
                     $backupKey = $table . '_' . ($data['id'] ?? uniqid());
                 }
             } else {
-                // For inserts and other operations, use unique key with timestamp
+                // For other inserts, use unique key with timestamp
                 $backupKey = $table . '_' . ($data['id'] ?? uniqid()) . '_' . time();
             }
             
@@ -229,12 +284,21 @@ class FirebaseBackup {
         try {
             // Find all records with matching ID in the table
             $recordId = $data['id'] ?? null;
-            if (!$recordId) {
+            $targetClassId = $data['class_id'] ?? null;
+            $targetStudentId = $data['student_id'] ?? null;
+            $targetDate = $data['date'] ?? null;
+            $targetTimetableId = isset($data['timetable_id']) ? (string)$data['timetable_id'] : null; // Session ID
+            $normalizedTargetDate = $targetDate ? $this->normalizeDateValue($targetDate) : null;
+            
+            // For attendance table: allow deletion without ID if we have class_id, student_id, date, and timetable_id
+            if (!$recordId && $table === 'attendance' && $targetClassId && $targetStudentId && $normalizedTargetDate && $targetTimetableId) {
+                error_log("Attempting to delete attendance from Firebase by session (no ID required): class={$targetClassId}, student={$targetStudentId}, date={$normalizedTargetDate}, session={$targetTimetableId}");
+            } elseif (!$recordId) {
                 error_log("No ID provided for Firebase deletion");
                 return false;
+            } else {
+                error_log("Attempting to delete from Firebase: table={$table}, id={$recordId}");
             }
-            
-            error_log("Attempting to delete from Firebase: table={$table}, id={$recordId}");
             
             // Build URL to query Firebase
             $url = $this->config['database_url'] . 'attendance_system/' . $table . '.json';
@@ -284,30 +348,109 @@ class FirebaseBackup {
                 $shouldDelete = false;
                 $matchReason = '';
                 
-                // STRICT MATCHING: Only delete if ID matches exactly
-                // Priority 1: Check data.id (most reliable)
-                if (isset($record['data']['id']) && $record['data']['id'] == $recordId) {
-                    $shouldDelete = true;
-                    $matchReason = 'data.id';
-                    error_log("Firebase deletion match found (data.id): key={$key}, id=" . $record['data']['id']);
-                }
-                // Priority 2: Check root id (fallback)
-                elseif (isset($record['id']) && $record['id'] == $recordId) {
-                    $shouldDelete = true;
-                    $matchReason = 'root.id';
-                    error_log("Firebase deletion match found (root.id): key={$key}, id=" . $record['id']);
-                }
-                // Priority 3: Check key pattern (last resort, but still strict)
-                // Only match if key ends with the ID or contains it with underscores
-                elseif (preg_match('/_' . preg_quote($recordId, '/') . '(_|$)/', $key)) {
-                    // Only match if key contains the ID with underscore before it and underscore or end after it
-                    $shouldDelete = true;
-                    $matchReason = 'key.pattern';
-                    error_log("Firebase deletion match found (key pattern): key={$key}");
+                // For attendance records: ALWAYS check session ID, even when matching by ID
+                // This prevents deleting records from other sessions
+                if ($table === 'attendance') {
+                    // For attendance, we MUST verify session ID before deleting
+                    // Skip ID-only matching to prevent cross-session deletion
+                    
+                    // Check by key format first (most reliable for session-specific deletion)
+                    if (strpos($key, 'attendance_') === 0) {
+                        $keyParts = explode('_', $key);
+                        if (count($keyParts) >= 5) {
+                            // Has session ID in key format: attendance_{classId}_{studentId}_{date}_{sessionId}
+                            $keyClassId = $keyParts[1] ?? '';
+                            $keyStudentId = $keyParts[2] ?? '';
+                            $keyDate = $keyParts[3] ?? '';
+                            $keySessionId = $keyParts[4] ?? '';
+                            
+                            // Check if key matches all criteria INCLUDING session ID
+                            $keyClassMatches = ($targetClassId && ($keyClassId == $targetClassId || (int)$keyClassId == (int)$targetClassId));
+                            $keyStudentMatches = ($targetStudentId && ($keyStudentId == $targetStudentId || (int)$keyStudentId == (int)$targetStudentId));
+                            $keyDateMatches = ($normalizedTargetDate && $keyDate == $normalizedTargetDate);
+                            
+                            // CRITICAL: Session ID must match if timetable_id is provided
+                            $keySessionMatches = true;
+                            if ($targetTimetableId !== null && $targetTimetableId !== '') {
+                                $keySessionMatches = ($keySessionId == $targetTimetableId || (int)$keySessionId == (int)$targetTimetableId);
+                            }
+                            
+                            // Also check if ID matches (for confirmation)
+                            $keyIdMatches = false;
+                            $recordData = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
+                            if (isset($recordData['id']) && $recordData['id'] == $recordId) {
+                                $keyIdMatches = true;
+                            }
+                            
+                            if ($keyClassMatches && $keyStudentMatches && $keyDateMatches && $keySessionMatches) {
+                                // For attendance deletion, session match is the primary requirement
+                                // ID match is optional but preferred for safety
+                                $shouldDelete = true;
+                                $matchReason = 'attendance_key_format_with_session';
+                                error_log("Firebase deletion match found (key format with session): key={$key}, class_id={$keyClassId}, student_id={$keyStudentId}, date={$keyDate}, session_id={$keySessionId}, target_session={$targetTimetableId}, id_match=" . ($keyIdMatches ? 'yes' : 'no'));
+                            } else {
+                                // Log why it didn't match
+                                error_log("Firebase deletion NO MATCH: key={$key}, class_match=" . ($keyClassMatches ? 'yes' : 'no') . 
+                                          ", student_match=" . ($keyStudentMatches ? 'yes' : 'no') . 
+                                          ", date_match=" . ($keyDateMatches ? 'yes' : 'no') . 
+                                          ", session_match=" . ($keySessionMatches ? 'yes' : 'no') . 
+                                          " (key_session={$keySessionId}, target_session={$targetTimetableId})");
+                            }
+                        }
+                    }
+                } else {
+                    // For other tables: use ID matching (normal behavior)
+                    // STRICT MATCHING: Only delete if ID matches exactly
+                    // Priority 1: Check data.id (most reliable)
+                    if (isset($record['data']['id']) && $record['data']['id'] == $recordId) {
+                        $shouldDelete = true;
+                        $matchReason = 'data.id';
+                        error_log("Firebase deletion match found (data.id): key={$key}, id=" . $record['data']['id']);
+                    }
+                    // Priority 2: Check root id (fallback)
+                    elseif (isset($record['id']) && $record['id'] == $recordId) {
+                        $shouldDelete = true;
+                        $matchReason = 'root.id';
+                        error_log("Firebase deletion match found (root.id): key={$key}, id=" . $record['id']);
+                    }
+                    // Priority 3: Check key pattern (last resort, but still strict)
+                    elseif (preg_match('/_' . preg_quote($recordId, '/') . '(_|$)/', $key)) {
+                        $shouldDelete = true;
+                        $matchReason = 'key.pattern';
+                        error_log("Firebase deletion match found (key pattern): key={$key}");
+                    }
                 }
                 
-                // DO NOT use field matching (class_id, day_of_week, etc.) as it's too broad
-                // This was causing multiple records to be deleted
+                // Additional check for attendance: verify by data content if key format check didn't work
+                if (!$shouldDelete && $table === 'attendance' && $targetClassId && $targetStudentId && $normalizedTargetDate) {
+                    $recordData = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
+                    $recordClassId = $recordData['class_id'] ?? $recordData['classId'] ?? null;
+                    $recordStudentId = $recordData['student_id'] ?? $recordData['studentId'] ?? null;
+                    $recordDate = isset($recordData['date']) ? $this->normalizeDateValue($recordData['date']) : null;
+                    $recordTimetableId = isset($recordData['timetable_id']) ? (string)$recordData['timetable_id'] : null;
+                    $recordDataId = isset($recordData['id']) ? $recordData['id'] : null;
+                    
+                    // STRICT matching: class_id, student_id, date, AND timetable_id (if provided) must ALL match
+                    $classMatches = ($recordClassId == $targetClassId || (int)$recordClassId == (int)$targetClassId);
+                    $studentMatches = ($recordStudentId == $targetStudentId || (int)$recordStudentId == (int)$targetStudentId);
+                    $dateMatches = ($recordDate == $normalizedTargetDate);
+                    $idMatches = ($recordId && $recordDataId && $recordDataId == $recordId);
+                    
+                    // CRITICAL: Session ID must match if timetable_id is provided
+                    $sessionMatches = true;
+                    if ($targetTimetableId !== null && $targetTimetableId !== '') {
+                        $sessionMatches = ($recordTimetableId == $targetTimetableId || (int)$recordTimetableId == (int)$targetTimetableId);
+                    } elseif ($recordTimetableId !== null && $recordTimetableId !== '') {
+                        // Target has no session but record has session - don't match
+                        $sessionMatches = false;
+                    }
+                    
+                    if ($classMatches && $studentMatches && $dateMatches && $sessionMatches && $idMatches) {
+                        $shouldDelete = true;
+                        $matchReason = 'attendance_data_content_with_session';
+                        error_log("Firebase deletion match found (data content): key={$key}, class_id={$recordClassId}, student_id={$recordStudentId}, date={$recordDate}, timetable_id={$recordTimetableId}, id={$recordDataId}");
+                    }
+                }
                 
                 if ($shouldDelete && !$foundMatch) {
                     // Delete this specific record
@@ -359,6 +502,23 @@ class FirebaseBackup {
             error_log("Error deleting record from Firebase: " . $e->getMessage());
             return false;
         }
+    }
+    
+    private function normalizeDateValue($dateString) {
+        if (!$dateString) {
+            return '';
+        }
+        $dateString = trim($dateString);
+        if (preg_match('/^\d{8}$/', $dateString)) {
+            return substr($dateString, 0, 4) . '-' . substr($dateString, 4, 2) . '-' . substr($dateString, 6, 2);
+        }
+        if (preg_match('/^\d{4}-\d{2}-\d{2}/', $dateString)) {
+            return substr($dateString, 0, 10);
+        }
+        if (preg_match('/^\d{4}\/\d{2}\/\d{2}/', $dateString)) {
+            return substr($dateString, 0, 4) . '-' . substr($dateString, 5, 2) . '-' . substr($dateString, 8, 2);
+        }
+        return substr($dateString, 0, 10);
     }
     
     /**

@@ -183,35 +183,105 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 break;
 
             case 'delete_student':
-                $student_id = $_POST['student_id'];
+                $student_id = isset($_POST['student_id']) ? (int)$_POST['student_id'] : 0;
+                
+                // Check if this is an AJAX request
+                $isAjax = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest';
+                
+                if (!$student_id) {
+                    if ($isAjax) {
+                        header('Content-Type: application/json');
+                        echo json_encode(['success' => false, 'error' => 'Invalid student ID for deletion']);
+                        exit();
+                    } else {
+                        $_SESSION['error_message'] = "Invalid student ID for deletion";
+                        header("Location: manage_students.php");
+                        exit();
+                    }
+                }
+                
                 try {
-                    // Check if student is enrolled in any active classes
+                    require_once '../helpers/BackupHooks.php';
+                    $backupHooks = new BackupHooks();
+                    
+                    $pdo->beginTransaction();
+                    
+                    // Admin delete: Just soft delete the student with status = 'deleted'
+                    // Do NOT mark class_students as 'dropped' - that's for teacher drop only
+                    // The student will appear in "Deleted Students" tab, not "Drop Student" tab
+                    
+                    // Use soft delete and set status to 'deleted'
                     $stmt = $pdo->prepare("
-                        SELECT COUNT(*) 
-                        FROM class_students cs 
-                        JOIN classes c ON cs.class_id = c.id 
-                        WHERE cs.student_id = ? AND c.status = 'active'
+                        UPDATE students 
+                        SET is_deleted = 1, 
+                            deleted_at = NOW(),
+                            status = 'deleted'
+                        WHERE id = ?
                     ");
                     $stmt->execute([$student_id]);
-                    $activeClasses = $stmt->fetchColumn();
-
-                    if ($activeClasses > 0) {
-                        $_SESSION['error_message'] = "Cannot delete student: They are currently enrolled in active classes.";
-                    } else {
-                        // Use soft delete instead of hard delete
-                        if (softDelete('students', $student_id)) {
-                            $_SESSION['success_message'] = "Student has been moved to archive.";
+                    
+                    if ($stmt->rowCount() > 0) {
+                        // Backup student soft delete to Firebase
+                        try {
+                            // Get student data after soft delete
+                            $stmt = $pdo->prepare("SELECT * FROM students WHERE id = ?");
+                            $stmt->execute([$student_id]);
+                            $student = $stmt->fetch(PDO::FETCH_ASSOC);
+                            
+                            if ($student) {
+                                $updatedData = [
+                                    'is_deleted' => 1,
+                                    'deleted_at' => date('Y-m-d H:i:s'),
+                                    'status' => 'deleted'
+                                ];
+                                $backupHooks->backupStudentUpdate($student_id, $updatedData);
+                                error_log("Firebase backup completed for student soft delete (admin): {$student_id}");
+                            }
+                        } catch (Exception $e) {
+                            error_log("Firebase backup failed for student soft delete: " . $e->getMessage());
+                            // Don't fail the deletion if backup fails
+                        }
+                        
+                        $pdo->commit();
+                        
+                        $successMsg = "Student has been moved to archive (Deleted Students).";
+                        
+                        if ($isAjax) {
+                            header('Content-Type: application/json');
+                            echo json_encode(['success' => true, 'message' => $successMsg]);
+                            exit();
                         } else {
-                            $_SESSION['error_message'] = "Error archiving student. Please try again.";
-                            error_log("Failed to soft delete student ID: " . $student_id);
+                            $_SESSION['success_message'] = $successMsg;
+                            header("Location: manage_students.php");
+                            exit();
+                        }
+                    } else {
+                        $pdo->rollBack();
+                        $errorMsg = "Error archiving student. Please try again.";
+                        error_log("Failed to soft delete student ID: " . $student_id);
+                        if ($isAjax) {
+                            header('Content-Type: application/json');
+                            echo json_encode(['success' => false, 'error' => $errorMsg]);
+                            exit();
+                        } else {
+                            $_SESSION['error_message'] = $errorMsg;
+                            header("Location: manage_students.php");
+                            exit();
                         }
                     }
                 } catch(PDOException $e) {
-                    $_SESSION['error_message'] = "Error: " . $e->getMessage();
+                    $errorMsg = "Error: " . $e->getMessage();
                     error_log("Error in delete_student: " . $e->getMessage());
+                    if ($isAjax) {
+                        header('Content-Type: application/json');
+                        echo json_encode(['success' => false, 'error' => $errorMsg]);
+                        exit();
+                    } else {
+                        $_SESSION['error_message'] = $errorMsg;
+                        header("Location: manage_students.php");
+                        exit();
+                    }
                 }
-                header("Location: manage_students.php");
-                exit();
                 break;
         }
     } catch (PDOException $e) {
@@ -873,22 +943,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         const editStudentModal = document.getElementById('editStudentModal');
         editStudentModal.addEventListener('show.bs.modal', function (event) {
             const button = event.relatedTarget;
-            const studentId = button.getAttribute('data-id');
-            const studentEmail = button.getAttribute('data-email');
-            const studentCourse = button.getAttribute('data-course');
-            const studentName = button.getAttribute('data-name');
+            if (!button) return;
             
+            let student;
+            try {
+                const studentData = button.getAttribute('data-student');
+                if (!studentData) {
+                    console.error('No student data found in data-student attribute');
+                    return;
+                }
+                student = JSON.parse(studentData);
+            } catch (error) {
+                console.error('Error parsing student data:', error);
+                return;
+            }
+            
+            // Populate all edit modal fields
             const modalTitle = editStudentModal.querySelector('.modal-title');
-            const studentIdInput = editStudentModal.querySelector('#editStudentId');
-            const studentEmailInput = editStudentModal.querySelector('#editEmail');
-            const studentCourseInput = editStudentModal.querySelector('#editCourse');
-            const resetPasswordCheckbox = editStudentModal.querySelector('#editResetPassword');
-
-            modalTitle.textContent = 'Edit Student: ' + studentName;
-            studentIdInput.value = studentId;
-            studentEmailInput.value = studentEmail;
-            studentCourseInput.value = studentCourse;
-            resetPasswordCheckbox.checked = false; // Ensure checkbox is unchecked by default
+            document.getElementById('editStudentId').value = student.id || '';
+            document.getElementById('editStudentIdFieldDisplay').value = student.student_id || '';
+            document.getElementById('editFirstName').value = student.first_name || '';
+            document.getElementById('editMiddleName').value = student.middle_name || '';
+            document.getElementById('editLastName').value = student.last_name || '';
+            document.getElementById('editSuffixName').value = student.suffix_name || '';
+            document.getElementById('editSex').value = student.sex || 'Male';
+            document.getElementById('editCivilStatus').value = student.civil_status || 'Single';
+            document.getElementById('editBirthdate').value = student.birthdate || '';
+            document.getElementById('editPlaceOfBirth').value = student.place_of_birth || '';
+            document.getElementById('editCitizenship').value = student.citizenship || '';
+            document.getElementById('editAddress').value = student.address || '';
+            document.getElementById('editPhone').value = student.phone_number || '';
+            document.getElementById('editEmail').value = student.email || '';
+            document.getElementById('editCourse').value = student.course || '';
+            document.getElementById('editResetPassword').checked = false;
+            
+            // Update modal title with student name
+            const firstName = (student.first_name || '').trim();
+            const middleName = (student.middle_name || '').trim();
+            const lastName = (student.last_name || '').trim();
+            const fullName = [firstName, middleName, lastName].filter(n => n).join(' ') || 'Student';
+            modalTitle.textContent = 'Edit Student: ' + fullName;
         });
 
         // Toggle sidebar

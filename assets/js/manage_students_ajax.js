@@ -110,7 +110,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 title="View Details">
                                 <i class="bi bi-eye fs-5"></i>
                             </a>
-                            <a href="#" class="text-warning d-inline-flex align-items-center justify-content-center" 
+                            <a href="#" class="edit-student-btn text-warning d-inline-flex align-items-center justify-content-center" 
                                 style="width: 32px; height: 32px;"
                                 data-bs-toggle="modal" 
                                 data-bs-target="#editStudentModal" 
@@ -119,7 +119,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 title="Edit Student">
                                 <i class="bi bi-pencil-square fs-5"></i>
                             </a>
-                            <a href="#" class="text-danger d-inline-flex align-items-center justify-content-center" 
+                            <a href="#" class="delete-student-btn text-danger d-inline-flex align-items-center justify-content-center" 
                                 style="width: 32px; height: 32px;"
                                 data-bs-toggle="modal" 
                                 data-bs-target="#deleteStudentModal" 
@@ -160,36 +160,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initial render
     renderSectionButtons();
 
-    // Note: View student modal is now handled by Bootstrap modal event in manage_students.php
-    // Add event listener for edit buttons after rendering
-    studentsList.addEventListener('click', function(e) {
-        if (e.target.closest('.edit-student-btn')) {
-            const btn = e.target.closest('.edit-student-btn');
-            const student = JSON.parse(btn.getAttribute('data-student'));
-            
-            // Populate edit modal fields
-            document.getElementById('editStudentId').value = student.id;
-            document.getElementById('editStudentIdFieldDisplay').value = student.student_id || '';
-            document.getElementById('editFirstName').value = student.first_name || '';
-            document.getElementById('editMiddleName').value = student.middle_name || '';
-            document.getElementById('editLastName').value = student.last_name || '';
-            document.getElementById('editSuffixName').value = student.suffix_name || '';
-            document.getElementById('editSex').value = student.sex || 'Male';
-            document.getElementById('editCivilStatus').value = student.civil_status || 'Single';
-            document.getElementById('editBirthdate').value = student.birthdate || '';
-            document.getElementById('editPlaceOfBirth').value = student.place_of_birth || '';
-            document.getElementById('editCitizenship').value = student.citizenship || '';
-            document.getElementById('editAddress').value = student.address || '';
-            document.getElementById('editPhone').value = student.phone_number || '';
-            document.getElementById('editEmail').value = student.email || '';
-            document.getElementById('editCourse').value = student.course || '';
-            // Reset password checkbox
-            document.getElementById('editResetPassword').checked = false;
-            // Update modal title with student name (FirstName MiddleName LastName)
-            const modalTitle = document.querySelector('#editStudentModal .modal-title');
-            modalTitle.textContent = 'Edit Student: ' + (student.first_name || '') + ' ' + (student.middle_name || '') + ' ' + (student.last_name || '');
-        }
-    });
+    // Note: View and Edit student modals are now handled by Bootstrap modal events in manage_students.php
 
     // Add event listener for delete buttons after rendering
     studentsList.addEventListener('click', function(e) {
@@ -230,19 +201,41 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
                     
                     const formData = new FormData();
-                    formData.append('id', studentId);
-                    fetch('delete_student.php', {
+                    formData.append('action', 'delete_student');
+                    formData.append('student_id', studentId);
+                    fetch('manage_students.php', {
                         method: 'POST',
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
                         body: formData
                     })
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.success) {
-                            const deleteModal = bootstrap.Modal.getInstance(deleteStudentModal);
-                            if (deleteModal) deleteModal.hide();
-                            fetchStudents();
+                    .then(response => {
+                        // Check if response is JSON
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            return response.json();
                         } else {
-                            alert('Failed to delete student: ' + (data.error || 'Unknown error'));
+                            // If it's not JSON (redirect), reload the page
+                            window.location.reload();
+                            return null;
+                        }
+                    })
+                    .then(data => {
+                        if (data) {
+                            if (data.success) {
+                                const deleteModal = bootstrap.Modal.getInstance(deleteStudentModal);
+                                if (deleteModal) deleteModal.hide();
+                                // Refresh the student list
+                                fetchStudents();
+                                // Show success message if available
+                                if (data.message) {
+                                    // You can show a toast notification here if you have one
+                                    console.log('Success:', data.message);
+                                }
+                            } else {
+                                alert('Failed to delete student: ' + (data.error || 'Unknown error'));
+                            }
                         }
                     })
                     .catch(error => {

@@ -1,17 +1,15 @@
 Array
 (
     [action] => assign_subject
-    [year_level] => 1
-    [section_id] => 3
+    [year_level] => 4
+    [section_id] => 9
     [subject_ids] => Array
         (
-            [0] => 52
-            [1] => 53
+            [0] => 70
         )
 
     [teacher_id] => 1
     [semester] => 1st Semester
-    [term_period] => 
-    [start_date] => 2025-08-01
+    [start_date] => 2025-08-04
     [end_date] => 2025-12-20
 )

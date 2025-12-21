@@ -320,6 +320,13 @@ try {
             </a>
         </div>
         
+        <!-- Announcements Section -->
+        <div class="row animate-fadeIn mb-4">
+            <div class="col-12">
+                <?php include '../includes/announcements_section.php'; ?>
+            </div>
+        </div>
+        
         <!-- Pending Tasks and Recent Activities -->
         <div class="row">
             <div class="col-lg-6 mb-4">
@@ -415,8 +422,12 @@ try {
     <script>
     function pollSidebarUnreadBadge() {
         fetch('teacher_unread_count.php')
-            .then(r => r.json())
+            .then(r => {
+                if (!r.ok) return null;
+                return r.json();
+            })
             .then(data => {
+                if (!data) return;
                 const badge = document.getElementById('sidebar-unread-badge');
                 if (badge) {
                     if (data.unread > 0) {
@@ -426,6 +437,9 @@ try {
                         badge.style.display = 'none';
                     }
                 }
+            })
+            .catch(err => {
+                // Silently handle errors
             });
     }
     setInterval(pollSidebarUnreadBadge, 2000);

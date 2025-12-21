@@ -61,10 +61,253 @@ function ensureRfidTagsTable(PDO $pdo) {
 }
 
 /**
+ * Sync RFID tags from Firebase to MySQL
+ */
+function syncRfidTagsFromFirebase(PDO $pdo): void {
+    try {
+        $firebaseConfig = require __DIR__ . '/../config/firebase.php';
+        if (!$firebaseConfig['backup_enabled']) {
+            return;
+        }
+        
+        $url = rtrim($firebaseConfig['database_url'], '/') . '/attendance_system/rfid_tags.json';
+        
+        $context = stream_context_create([
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false
+            ],
+            'http' => [
+                'timeout' => 10
+            ]
+        ]);
+        
+        $response = @file_get_contents($url, false, $context);
+        if ($response === false) {
+            // Silently fail - Firebase might not be accessible
+            return;
+        }
+        
+        $firebaseData = json_decode($response, true);
+        if (!$firebaseData || !is_array($firebaseData)) {
+            return;
+        }
+        
+        // Group by tag_uid and track all operations, including deletions
+        $tagOperations = [];
+        $tagDeletions = [];
+        
+        foreach ($firebaseData as $key => $record) {
+            if (!isset($record['data']) || !is_array($record['data'])) {
+                continue;
+            }
+            
+            $tagData = $record['data'];
+            $operation = $record['operation'] ?? 'insert';
+            $tagUid = $tagData['tag_uid'] ?? null;
+            
+            if (empty($tagUid)) {
+                continue;
+            }
+            
+            $serverTime = $record['server_time'] ?? 0;
+            
+            // Track deletion operations separately
+            if ($operation === 'deletion' || $operation === 'delete') {
+                if (!isset($tagDeletions[$tagUid]) || $serverTime > ($tagDeletions[$tagUid]['server_time'] ?? 0)) {
+                    $tagDeletions[$tagUid] = [
+                        'tag_uid' => $tagUid,
+                        'operation' => $operation,
+                        'server_time' => $serverTime
+                    ];
+                }
+            } else {
+                // Track non-deletion operations
+                if (!isset($tagOperations[$tagUid]) || $serverTime > ($tagOperations[$tagUid]['server_time'] ?? 0)) {
+                    $tagOperations[$tagUid] = [
+                        'tag_uid' => $tagUid,
+                        'tag_data' => $tagData,
+                        'operation' => $operation,
+                        'server_time' => $serverTime
+                    ];
+                }
+            }
+        }
+        
+        // Process each unique tag
+        foreach ($tagOperations as $tagUid => $assignment) {
+            $tagData = $assignment['tag_data'];
+            $operation = $assignment['operation'];
+            $tagUid = $assignment['tag_uid'];
+            $operationTime = $assignment['server_time'];
+            
+            // Check if there's a deletion operation that's more recent than this operation
+            if (isset($tagDeletions[$tagUid])) {
+                $deletionTime = $tagDeletions[$tagUid]['server_time'];
+                // If deletion is more recent, skip this tag (don't re-add deleted tags)
+                if ($deletionTime >= $operationTime) {
+                    continue;
+                }
+            }
+            
+            // Check if tag exists in MySQL
+            $stmt = $pdo->prepare("SELECT id, student_id, status FROM rfid_tags WHERE tag_uid = ?");
+            $stmt->execute([$tagUid]);
+            $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            // If tag doesn't exist in MySQL but there's a deletion in Firebase, don't re-add it
+            if (!$existing && isset($tagDeletions[$tagUid])) {
+                // Tag was deleted, don't re-add it
+                continue;
+            }
+            
+            $studentId = isset($tagData['student_id']) && !empty($tagData['student_id']) ? (int)$tagData['student_id'] : null;
+            
+            if ($existing) {
+                // Update existing tag if assignment changed
+                if ($operation === 'assign' && $studentId) {
+                    $pdo->beginTransaction();
+                    
+                    try {
+                        // Clear ALL tags assigned to the new student first (including this one)
+                        $pdo->prepare("UPDATE rfid_tags SET student_id = NULL, status = 'available', assigned_at = NULL WHERE student_id = ?")
+                            ->execute([$studentId]);
+                        
+                        // Clear previous assignment
+                        if ($existing['student_id'] && $existing['student_id'] != $studentId) {
+                            $pdo->prepare("UPDATE students SET rfid_uid = NULL WHERE id = ?")
+                                ->execute([$existing['student_id']]);
+                            
+                            // Clear any other tags assigned to the previous student
+                            $pdo->prepare("UPDATE rfid_tags SET student_id = NULL, status = 'available', assigned_at = NULL WHERE student_id = ?")
+                                ->execute([$existing['student_id']]);
+                        }
+                        
+                        // Clear student's rfid_uid first to ensure clean state
+                        $pdo->prepare("UPDATE students SET rfid_uid = NULL WHERE id = ?")
+                            ->execute([$studentId]);
+                        
+                        // Update tag
+                        $pdo->prepare("
+                            UPDATE rfid_tags 
+                            SET student_id = ?, status = 'assigned', assigned_at = NOW()
+                            WHERE id = ?
+                        ")->execute([$studentId, $existing['id']]);
+                        
+                        // Update student's rfid_uid
+                        $pdo->prepare("UPDATE students SET rfid_uid = ? WHERE id = ?")
+                            ->execute([$tagUid, $studentId]);
+                        
+                        $pdo->commit();
+                    } catch (Exception $e) {
+                        if ($pdo->inTransaction()) {
+                            $pdo->rollBack();
+                        }
+                        error_log("Error syncing RFID assignment from Firebase: " . $e->getMessage());
+                    }
+                } elseif ($operation === 'unassign' && $existing['student_id']) {
+                    // Handle unassign operation
+                    $pdo->beginTransaction();
+                    
+                    try {
+                        $pdo->prepare("UPDATE students SET rfid_uid = NULL WHERE id = ?")
+                            ->execute([$existing['student_id']]);
+                        
+                        $pdo->prepare("
+                            UPDATE rfid_tags 
+                            SET student_id = NULL, status = 'available', assigned_at = NULL
+                            WHERE id = ?
+                        ")->execute([$existing['id']]);
+                        
+                        $pdo->commit();
+                    } catch (Exception $e) {
+                        if ($pdo->inTransaction()) {
+                            $pdo->rollBack();
+                        }
+                        error_log("Error syncing RFID unassignment from Firebase: " . $e->getMessage());
+                    }
+                }
+            } else {
+                // Insert new tag from Firebase
+                // Double-check tag doesn't exist (race condition protection)
+                $doubleCheck = $pdo->prepare("SELECT id FROM rfid_tags WHERE tag_uid = ? LIMIT 1");
+                $doubleCheck->execute([$tagUid]);
+                if ($doubleCheck->fetch()) {
+                    // Tag already exists (was added between check and insert), skip
+                    continue;
+                }
+                
+                $pdo->beginTransaction();
+                
+                try {
+                    // If assigning, clear ALL tags assigned to this student first
+                    if ($studentId && $operation === 'assign') {
+                        // Clear all tags assigned to this student
+                        $pdo->prepare("UPDATE rfid_tags SET student_id = NULL, status = 'available', assigned_at = NULL WHERE student_id = ?")
+                            ->execute([$studentId]);
+                        
+                        // Clear student's rfid_uid
+                        $pdo->prepare("UPDATE students SET rfid_uid = NULL WHERE id = ?")
+                            ->execute([$studentId]);
+                    }
+                    
+                    $insertStmt = $pdo->prepare("
+                        INSERT INTO rfid_tags (tag_uid, label, status, student_id, assigned_at, last_seen, last_source, created_at)
+                        VALUES (?, ?, ?, ?, ?, NOW(), 'firebase_sync', NOW())
+                    ");
+                    
+                    $status = ($studentId && $operation === 'assign') ? 'assigned' : 'available';
+                    $assignedAt = ($studentId && $operation === 'assign') ? date('Y-m-d H:i:s') : null;
+                    
+                    $insertStmt->execute([
+                        $tagUid,
+                        $tagData['label'] ?? null,
+                        $status,
+                        $studentId,
+                        $assignedAt
+                    ]);
+                    
+                    // Update student's rfid_uid if assigned
+                    if ($studentId && $operation === 'assign') {
+                        $pdo->prepare("UPDATE students SET rfid_uid = ? WHERE id = ?")
+                            ->execute([$tagUid, $studentId]);
+                    }
+                    
+                    $pdo->commit();
+                } catch (PDOException $e) {
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                    // Check if it's a duplicate key error (tag already exists)
+                    if ($e->getCode() == 23000 || strpos($e->getMessage(), 'Duplicate entry') !== false || strpos($e->getMessage(), 'UNIQUE constraint') !== false) {
+                        // Tag already exists, skip silently (race condition handled)
+                        error_log("RFID tag {$tagUid} already exists, skipping duplicate insert from Firebase sync.");
+                    } else {
+                        error_log("Error inserting RFID tag from Firebase: " . $e->getMessage());
+                    }
+                } catch (Exception $e) {
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                    error_log("Error inserting RFID tag from Firebase: " . $e->getMessage());
+                }
+            }
+        }
+    } catch (Exception $e) {
+        error_log("Error syncing RFID tags from Firebase: " . $e->getMessage());
+    }
+}
+
+/**
  * Fetch all RFID tags with student information
  */
-function fetchRfidTags(PDO $pdo): array {
+function fetchRfidTags(PDO $pdo, $skipSync = false): array {
     try {
+        // Sync from Firebase first (unless explicitly skipped)
+        if (!$skipSync) {
+            syncRfidTagsFromFirebase($pdo);
+        }
+        
         $stmt = $pdo->query("
             SELECT 
                 t.*,
@@ -79,7 +322,9 @@ function fetchRfidTags(PDO $pdo): array {
                 s.section
             FROM rfid_tags t
             LEFT JOIN students s ON t.student_id = s.id
-            ORDER BY t.created_at DESC
+            ORDER BY 
+                CASE WHEN t.status = 'assigned' THEN 0 ELSE 1 END,
+                t.created_at DESC
         ");
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         return array_map('normalizeRfidTagRow', $rows);
@@ -188,6 +433,8 @@ function normalizeRfidTagRow(array $row): array {
     
     // Add student information if available
     if (!empty($row['first_name']) || !empty($row['last_name'])) {
+        $normalized['student_name'] = composeStudentName($row);
+        $normalized['student_student_id'] = $row['student_student_id'] ?? '';
         $normalized['student'] = [
             'id' => (int)$row['student_id'],
             'student_id' => $row['student_student_id'] ?? '',
@@ -197,6 +444,8 @@ function normalizeRfidTagRow(array $row): array {
             'section' => $row['section'] ?? ''
         ];
     } else {
+        $normalized['student_name'] = null;
+        $normalized['student_student_id'] = null;
         $normalized['student'] = null;
     }
     

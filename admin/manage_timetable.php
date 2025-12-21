@@ -80,6 +80,40 @@ foreach ($pdo->query("SELECT id, name, year_level FROM sections ORDER BY year_le
 $filter_year = isset($_GET['year']) ? (int)$_GET['year'] : ($year_levels[0] ?? null);
 $filter_section = isset($_GET['section']) ? $_GET['section'] : ($sections_by_year[$filter_year][0]['name'] ?? null);
 
+// Helper function to get year and section from class_id for redirects
+function getYearSectionFromClass($pdo, $class_id) {
+    try {
+        $stmt = $pdo->prepare("
+            SELECT s.year_level, c.section 
+            FROM classes c
+            JOIN subjects s ON c.subject_id = s.id
+            WHERE c.id = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$class_id]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($result) {
+            return ['year' => $result['year_level'], 'section' => $result['section']];
+        }
+    } catch (PDOException $e) {
+        error_log("Error getting year/section from class: " . $e->getMessage());
+    }
+    return null;
+}
+
+// Helper function to build redirect URL with filters
+function buildRedirectUrl($year = null, $section = null) {
+    $params = [];
+    if ($year !== null) {
+        $params['year'] = $year;
+    }
+    if ($section !== null) {
+        $params['section'] = $section;
+    }
+    $query = !empty($params) ? '?' . http_build_query($params) : '';
+    return 'manage_timetable.php' . $query;
+}
+
 // Filter timetables for display
 $filtered_timetable = [];
 foreach ($timetables as $schedule) {
@@ -148,29 +182,44 @@ if (
     $endMinutes = (int)explode(':', $end_time)[1];
     $startTimestamp = strtotime($start_time);
     $endTimestamp = strtotime($end_time);
+    // Get year and section from class_id for redirect (if available)
+    $yearSection = getYearSectionFromClass($pdo, $class_id);
+    $redirectYear = $yearSection['year'] ?? (isset($_GET['year']) ? (int)$_GET['year'] : null);
+    $redirectSection = $yearSection['section'] ?? (isset($_GET['section']) ? $_GET['section'] : null);
+    
     // NEW: Enforce 7:00 AM to 7:00 PM time range
     if ($startTimestamp < strtotime('07:00') || $endTimestamp > strtotime('19:00')) {
         $_SESSION['error_message'] = 'Start and End Time must be between 7:00 AM and 7:00 PM.';
         $_SESSION['form_data'] = $_POST;
-        header('Location: manage_timetable.php');
+        header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
         exit();
     }
     if (!(($startMinutes === 0 || $startMinutes === 30) && ($endMinutes === 0 || $endMinutes === 30))) {
         $_SESSION['error_message'] = 'Start and end times must be on a 30-minute interval (e.g., 10:00, 10:30, 11:00, etc).';
         $_SESSION['form_data'] = $_POST;
-        header('Location: manage_timetable.php');
+        header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
         exit();
     }
     // Enforce minimum 1 hour duration
     if (($endTimestamp - $startTimestamp) < 3600) {
         $_SESSION['error_message'] = 'The minimum schedule duration is 1 hour.';
         $_SESSION['form_data'] = $_POST;
-        header('Location: manage_timetable.php');
+        header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
         exit();
     }
     // --- NEW: Prevent overlapping schedules for teacher or room (including custom room) ---
-    $teacher_id = $teacherSections[$class_id][0]['teacher_id'];
-    $day_of_week = $day_of_week;
+    // Get teacher_id directly from classes table
+    $teacherStmt = $pdo->prepare('SELECT teacher_id FROM classes WHERE id = ?');
+    $teacherStmt->execute([$class_id]);
+    $teacher_id = $teacherStmt->fetchColumn();
+    
+    if (!$teacher_id) {
+        $_SESSION['error_message'] = 'Error: Could not find teacher for the selected class.';
+        $_SESSION['form_data'] = $_POST;
+        header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
+        exit();
+    }
+    
     $startTime = $start_time;
     $endTime = $end_time;
     $room = $room;
@@ -193,34 +242,69 @@ if (
     if ($duplicate) {
         $_SESSION['error_message'] = 'This schedule already exists. The same class already has a schedule on ' . htmlspecialchars($day_of_week) . ' from ' . htmlspecialchars($startTime) . ' to ' . htmlspecialchars($endTime) . '.';
         $_SESSION['form_data'] = $_POST;
-        header('Location: manage_timetable.php');
+        header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
         exit();
     }
     
-    // 1. Check for overlap (corrected logic)
-    $overlapStmt = $pdo->prepare('
-        SELECT t.* FROM timetable t
-        JOIN classes cl ON t.class_id = cl.id
+    // 1. Check for teacher overlap - teacher cannot have overlapping schedules regardless of year/section
+    // Two time ranges overlap if: existing_start < new_end AND existing_end > new_start
+    $teacherOverlapStmt = $pdo->prepare('
+        SELECT t.*, 
+               s.subject_code,
+               s.subject_name,
+               c.section,
+               s.year_level
+        FROM timetable t
+        JOIN classes c ON t.class_id = c.id
+        JOIN subjects s ON c.subject_id = s.id
         WHERE t.day_of_week = ?
-          AND (
-                (cl.teacher_id = ?)
-             OR (t.room = ?)
-          )
+          AND c.teacher_id = ?
           AND (
                 (t.start_time < ? AND t.end_time > ?)
           )
     ');
-    $overlapStmt->execute([
+    $teacherOverlapStmt->execute([
         $day_of_week,
         $teacher_id,
-        $room,
-        $endTime, $startTime  // existing schedule starts before new ends AND existing ends after new starts
+        $endTime,  // existing start < new end
+        $startTime // existing end > new start
     ]);
-    $overlap = $overlapStmt->fetch();
-    if ($overlap) {
-        $_SESSION['error_message'] = 'Conflict: The selected teacher or room already has a schedule that overlaps with this time on the same day.';
+    $teacherOverlap = $teacherOverlapStmt->fetch(PDO::FETCH_ASSOC);
+    if ($teacherOverlap) {
+        $conflictInfo = htmlspecialchars($teacherOverlap['subject_code'] . ' - ' . $teacherOverlap['section'] . ' (' . $teacherOverlap['year_level'] . 'st Year)');
+        $_SESSION['error_message'] = 'Conflict: The selected teacher already has a schedule that overlaps with this time on ' . htmlspecialchars($day_of_week) . '. Conflicting schedule: ' . $conflictInfo . ' from ' . htmlspecialchars($teacherOverlap['start_time']) . ' to ' . htmlspecialchars($teacherOverlap['end_time']) . '.';
         $_SESSION['form_data'] = $_POST;
-        header('Location: manage_timetable.php');
+        header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
+        exit();
+    }
+    
+    // 2. Check for room overlap - room cannot be double-booked
+    $roomOverlapStmt = $pdo->prepare('
+        SELECT t.*, 
+               s.subject_code,
+               c.section,
+               s.year_level
+        FROM timetable t
+        JOIN classes c ON t.class_id = c.id
+        JOIN subjects s ON c.subject_id = s.id
+        WHERE t.day_of_week = ?
+          AND t.room = ?
+          AND (
+                (t.start_time < ? AND t.end_time > ?)
+          )
+    ');
+    $roomOverlapStmt->execute([
+        $day_of_week,
+        $room,
+        $endTime,  // existing start < new end
+        $startTime // existing end > new start
+    ]);
+    $roomOverlap = $roomOverlapStmt->fetch(PDO::FETCH_ASSOC);
+    if ($roomOverlap) {
+        $conflictInfo = htmlspecialchars($roomOverlap['subject_code'] . ' - ' . $roomOverlap['section'] . ' (' . $roomOverlap['year_level'] . 'st Year)');
+        $_SESSION['error_message'] = 'Conflict: The selected room is already booked at this time on ' . htmlspecialchars($day_of_week) . '. Conflicting schedule: ' . $conflictInfo . ' from ' . htmlspecialchars($roomOverlap['start_time']) . ' to ' . htmlspecialchars($roomOverlap['end_time']) . '.';
+        $_SESSION['form_data'] = $_POST;
+        header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
         exit();
     }
     // 2. NEW: Enforce 4-hour per day limit per subject (regardless of teacher/section)
@@ -231,7 +315,7 @@ if (
     if ($startTimestamp === false || $endTimestamp === false || $endTimestamp <= $startTimestamp) {
         $_SESSION['error_message'] = 'Error: Invalid time range. End time must be after start time.';
         $_SESSION['form_data'] = $_POST;
-        header('Location: manage_timetable.php');
+        header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
         exit();
     }
     
@@ -244,7 +328,7 @@ if (
     if (!$subject_id) {
         $_SESSION['error_message'] = 'Error: Could not find subject for the selected class.';
         $_SESSION['form_data'] = $_POST;
-        header('Location: manage_timetable.php');
+        header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
         exit();
     }
     
@@ -289,7 +373,7 @@ if (
                                      'Current total: ' . number_format($total_hours, 2) . ' hour(s). ' .
                                      ($remaining_hours > 0 ? 'Only ' . $remaining_hours_formatted . ' hour(s) remaining.' : 'No time remaining.');
         $_SESSION['form_data'] = $_POST;
-        header('Location: manage_timetable.php');
+        header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
         exit();
     }
     // --- END NEW ---
@@ -310,10 +394,10 @@ if (
             $stmt->execute([
                 $class_id,
                 $course_id,
-                $day_of_week,
-                $start_time,
-                $end_time,
-                $room
+            $day_of_week,
+            $start_time,
+            $end_time,
+            $room
             ]);
             
             // Get the inserted timetable ID
@@ -356,12 +440,24 @@ if (
             
             $_SESSION['success_message'] = 'Schedule added successfully!';
         unset($_SESSION['form_data']);
-        header('Location: manage_timetable.php');
+        // Get year and section from the class that was saved
+        $yearSection = getYearSectionFromClass($pdo, $class_id);
+        $redirectUrl = buildRedirectUrl(
+            $yearSection['year'] ?? null,
+            $yearSection['section'] ?? null
+        );
+        header('Location: ' . $redirectUrl);
             exit();
     } catch (PDOException $e) {
         $_SESSION['error_message'] = 'Error adding schedule: ' . $e->getMessage();
     unset($_SESSION['form_data']);
-    header('Location: manage_timetable.php');
+    // Get year and section from the class that was attempted
+    $yearSection = getYearSectionFromClass($pdo, $class_id);
+    $redirectUrl = buildRedirectUrl(
+        $yearSection['year'] ?? null,
+        $yearSection['section'] ?? null
+    );
+    header('Location: ' . $redirectUrl);
     exit();
     }
 }
@@ -371,6 +467,10 @@ if (
     isset($_POST['action']) && $_POST['action'] === 'delete' &&
     isset($_POST['id'])
 ) {
+    // Initialize redirect variables (will be set based on timetable data or current filter)
+    $redirectYear = isset($_GET['year']) ? (int)$_GET['year'] : null;
+    $redirectSection = isset($_GET['section']) ? $_GET['section'] : null;
+    
     try {
         // Get timetable data before deletion for Firebase backup
         $getStmt = $pdo->prepare("SELECT * FROM timetable WHERE id = ?");
@@ -379,8 +479,17 @@ if (
 
         if (!$timetableData) {
             $_SESSION['error_message'] = 'Schedule not found!';
-            header('Location: manage_timetable.php');
+            header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
             exit();
+        }
+        
+        // Get year and section from the timetable's class_id for redirect
+        if (isset($timetableData['class_id'])) {
+            $yearSection = getYearSectionFromClass($pdo, $timetableData['class_id']);
+            if ($yearSection) {
+                $redirectYear = $yearSection['year'];
+                $redirectSection = $yearSection['section'];
+            }
         }
 
         // Add ID to data for Firebase deletion
@@ -525,7 +634,7 @@ if (
     } catch (PDOException $e) {
         $_SESSION['error_message'] = 'Error deleting schedule: ' . $e->getMessage();
     }
-    header('Location: manage_timetable.php');
+    header('Location: ' . buildRedirectUrl($redirectYear, $redirectSection));
     exit();
 }
 ?>
@@ -1274,10 +1383,27 @@ if (
 
         // Add Timetable Form validation
         const addForm = document.getElementById('addTimetableForm');
+        const addTimetableModal = document.getElementById('addTimetableModal');
         const roomSelect = document.getElementById('room');
         const otherRoomInput = document.getElementById('other_room');
         const startTimeInput = document.getElementById('start_time');
         const endTimeInput = document.getElementById('end_time');
+        
+        // Clear validation errors when modal is opened
+        if (addTimetableModal) {
+            addTimetableModal.addEventListener('show.bs.modal', function() {
+                // Clear any validation errors
+                if (startTimeInput) {
+                    startTimeInput.classList.remove('is-invalid');
+                }
+                if (endTimeInput) {
+                    endTimeInput.classList.remove('is-invalid');
+                    // Remove error note if exists
+                    const note = endTimeInput.parentElement.querySelector('.invalid-feedback.time-range-note');
+                    if (note) note.remove();
+                }
+            });
+        }
 
         function isTimeInRange(timeStr) {
                 if (!timeStr) return false;
@@ -1286,41 +1412,68 @@ if (
             return minutes >= 420 && minutes <= 1140; // 7:00 (420) to 19:00 (1140)
         }
 
-        function validateTimeRangeFields() {
-            const startVal = startTimeInput.value;
-            const endVal = endTimeInput.value;
-            const validStart = isTimeInRange(startVal);
-            const validEnd = isTimeInRange(endVal);
+        function validateTimeRangeFields(showErrors = true) {
+            const startVal = startTimeInput.value.trim();
+            const endVal = endTimeInput.value.trim();
+            
             // Remove any existing note
             let note = endTimeInput.parentElement.querySelector('.invalid-feedback.time-range-note');
             if (note) note.remove();
-            if (!validStart || !validEnd) {
-                startTimeInput.classList.add('is-invalid');
-                endTimeInput.classList.add('is-invalid');
-                // Add note only if not present
-                note = document.createElement('div');
-                note.className = 'invalid-feedback d-block time-range-note';
-                note.innerText = 'Start and End Time must be between 7:00 AM and 7:00 PM.';
-                endTimeInput.parentElement.appendChild(note);
+            
+            // If fields are empty, don't show errors (only validate on submit)
+            if (!startVal || !endVal) {
+                if (showErrors) {
+                    // Only show errors if we're validating on submit
                     return false;
                 } else {
+                    // On input events, just clear errors if empty
+                    startTimeInput.classList.remove('is-invalid');
+                    endTimeInput.classList.remove('is-invalid');
+                    return true; // Allow empty fields during typing
+                }
+            }
+            
+            const validStart = isTimeInRange(startVal);
+            const validEnd = isTimeInRange(endVal);
+            
+            if (!validStart || !validEnd) {
+                if (showErrors) {
+                    startTimeInput.classList.add('is-invalid');
+                    endTimeInput.classList.add('is-invalid');
+                    // Add note only if not present
+                    note = document.createElement('div');
+                    note.className = 'invalid-feedback d-block time-range-note';
+                    note.innerText = 'Start and End Time must be between 7:00 AM and 7:00 PM.';
+                    endTimeInput.parentElement.appendChild(note);
+                }
+                return false;
+            } else {
                 startTimeInput.classList.remove('is-invalid');
                 endTimeInput.classList.remove('is-invalid');
-                // Note already removed above
                 return true;
             }
         }
 
             if (addForm) {
                 addForm.addEventListener('submit', function(e) {
-                if (!validateTimeRangeFields()) {
+                // On submit, validate with errors shown
+                if (!validateTimeRangeFields(true)) {
                         e.preventDefault();
                         return false;
                     }
                 // ...existing validation...
             });
-            startTimeInput.addEventListener('input', validateTimeRangeFields);
-            endTimeInput.addEventListener('input', validateTimeRangeFields);
+            // On input events, validate but don't show errors for empty fields
+            if (startTimeInput) {
+                startTimeInput.addEventListener('input', function() {
+                    validateTimeRangeFields(false);
+                });
+            }
+            if (endTimeInput) {
+                endTimeInput.addEventListener('input', function() {
+                    validateTimeRangeFields(false);
+                });
+            }
             }
 
             // Show PHP session alerts in modal if present

@@ -388,6 +388,13 @@ if (count($nameParts) >= 2) {
             </div>
         </div>
         
+        <!-- Announcements Section -->
+        <div class="row animate-fadeIn mb-4">
+            <div class="col-12">
+                <?php include '../includes/announcements_section.php'; ?>
+            </div>
+        </div>
+        
         <!-- Footer -->
         <footer class="sticky-footer mt-5">
             <div class="container">

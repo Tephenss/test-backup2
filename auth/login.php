@@ -62,8 +62,58 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             }
 
             if ($user_found && password_verify($password, $user_data['password'])) {
+                // For students, check if they're still using default password (birthdate)
+                if ($user_type === 'student' && isset($user_data['birthdate'])) {
+                    // Check if the entered password (plain text) matches the birthdate in any format
+                    $birthdate = $user_data['birthdate'];
+                    $birthdateFormats = [
+                        $birthdate, // Original format from DB (Y-m-d)
+                        date('Y-m-d', strtotime($birthdate)), // Ensure Y-m-d format
+                        date('Y/m/d', strtotime($birthdate)), // Y/m/d format
+                    ];
+                    
+                    // Remove duplicates and empty values
+                    $birthdateFormats = array_unique(array_filter($birthdateFormats));
+                    
+                    // Check if entered password matches any birthdate format
+                    $isDefaultPassword = false;
+                    foreach ($birthdateFormats as $bd) {
+                        if ($password === $bd) {
+                            $isDefaultPassword = true;
+                            break;
+                        }
+                    }
+                    
+                    if ($isDefaultPassword) {
+                        $errors[] = "You are still using the default password. Please change your password first using the 'Recover My Account' feature on the login page.";
+                        
+                        // Log failed login attempt
+                        try {
+                            $log_stmt = $pdo->prepare("INSERT INTO login_logs (username, user_type, status, ip_address) VALUES (?, ?, 'failed', ?)");
+                            $log_stmt->execute([$username, $user_type, $_SERVER['REMOTE_ADDR']]);
+                            
+                            // Backup login log to Firebase
+                            try {
+                                $backupHooks = new BackupHooks();
+                                $loginData = [
+                                    'username' => $username,
+                                    'user_type' => $user_type,
+                                    'status' => 'failed',
+                                    'ip_address' => $_SERVER['REMOTE_ADDR'],
+                                    'timestamp' => date('Y-m-d H:i:s')
+                                ];
+                                $backupHooks->backupLoginLog($loginData);
+                            } catch (Exception $e) {
+                                error_log("Firebase backup failed for login log: " . $e->getMessage());
+                            }
+                        } catch(PDOException $e) {
+                            error_log("Failed to log failed login: " . $e->getMessage());
+                        }
+                    }
+                }
+                
                 // For students, check if section is assigned
-                if ($user_type === 'student' && empty($user_data['section'])) {
+                if ($user_type === 'student' && empty($user_data['section']) && empty($errors)) {
                     $errors[] = "Please wait for section assignment.";
                     
                     // Log failed login attempt
@@ -88,7 +138,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     } catch(PDOException $e) {
                         error_log("Failed to log failed login: " . $e->getMessage());
                     }
-                } else {
+                }
+                
+                // Only proceed with login if no errors
+                if (empty($errors)) {
                     // Store user data temporarily
                     $_SESSION['temp_user_data'] = [
                         'id' => $user_data['id'],
